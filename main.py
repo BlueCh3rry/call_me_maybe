@@ -1,10 +1,11 @@
 import sys
+import llm_sdk.llm_sdk
 
 
 def main() -> None:
-    print("prompte:", sys.argv[1:])
-    for arg in sys.argv[1:]:
-        print(arg)
+    model = llm_sdk.llm_sdk.Small_LLM_Model()
+    path = model.get_path_to_tokenizer_file()
+    print(path)
 
 
 if __name__ == "__main__":
