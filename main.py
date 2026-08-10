@@ -8,6 +8,7 @@ def output() -> None:
     # with open(path, "r") as file:
         # outputfile = json.
 
+
 def main() -> None:
     print("Call_me_maybe")
     # argparse
@@ -21,19 +22,28 @@ def main() -> None:
     model = llm_sdk.Small_LLM_Model()
     for i in range(len(data)):
         prompt = data[i]['prompt']
-        print(f"data prompt [{i}]: {prompt}\n")
+        print(f"data prompt [{i}]: {prompt}")
         encoded: list[int] = model.encode(prompt).tolist()[0]
-        # path_voc = model.get_path_to_vocab_file()
-        # try:
-        #     with open(path_voc, "r") as vocab_file:
-        #         vocab = json.load(vocab_file)
-        # except FileNotFoundError:
-        #     print("Error: 'data.json' file was not found.")
-        # for _ in range(120):
-        print(f"\nMEEEEEEEEee {encoded}\n")
-        logits = model.get_logits_from_input_ids(encoded)
-        high_nbr = max(logits)
-        print(f"high nbr = {high_nbr}\n")
+        print(f"MEEEEEEEEee {encoded}")
+        lst_n = []
+        for x in range(20):
+            logits = model.get_logits_from_input_ids(encoded)
+            high_nbr = logits.index(max(logits))
+            lst_n.append(high_nbr)
+        print(f"high nbr lst = {lst_n}\n")
+        try:
+            with open(model.get_path_to_vocab_file(), "r") as vocab_file:
+                vocab: dict[str, int] = json.load(vocab_file)
+                keys = list(vocab.keys())
+                tok: list[int] = [vocab[keys[val]] for val in lst_n]
+                print(f"tok= {tok}")
+                decoded = [model.decode(tok)]
+                print(f"decoded= {decoded}")
+                prompt += decoded
+        except FileNotFoundError:
+            print("Error: 'data.json' file was not found.")
+
+        print(f"final prompt {prompt}")
 
     # output()
 
