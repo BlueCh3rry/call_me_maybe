@@ -1,15 +1,15 @@
 NAME=main.py
 
-CACHE_DIR ?= /sgoinfre/mmakhmae/tempcache
+# CACHE_DIR ?= /sgoinfre/mmakhmae/tempcache
 
-export POETRY_CACHE_DIR := $(CACHE_DIR)
-export PIP_CACHE_DIR := $(CACHE_DIR)/pip
+# export POETRY_CACHE_DIR := $(CACHE_DIR)
+# export PIP_CACHE_DIR := $(CACHE_DIR)/pip
 
 all: ${NAME}
 
 install:
 	pip install poetry
-	python3 -m poetry install --no-root -C llm_sdk
+	python3 -m poetry install --no-root
 
 run:
 	uv run python3 ${NAME}
