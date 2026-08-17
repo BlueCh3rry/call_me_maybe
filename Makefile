@@ -9,10 +9,10 @@ all: ${NAME}
 
 install:
 	pip install poetry
-	python3 -m poetry install --no-root
+	python3 -m -C llm poetry install --no-root
 
 run:
-	uv run python3 ${NAME}
+	-C llm  uv run python -m src
 
 debug:
 	python3 -m pdb ${NAME}
