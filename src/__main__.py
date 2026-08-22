@@ -7,19 +7,12 @@ import re
 # ANSWER_REGEX = re.compile(r"^Answer:\s*[A-Za-z0-9 ,.!?'\"()-]*$")
 
 
-def token_is_good(token_id: int, generated_tokens: list[int], model, data_def: dict[int, str]) -> bool:
+def token_is_good(token_id: int, generated_tokens: list[int], model: llm_s.llm_sdk.Small_LLM_Model) -> bool:
     candidate_tokens = generated_tokens + [token_id]
+    target = ("fn_add_numbers", "fn_greet", "fn_reverse_string", "fn_get_square_root", "fn_substitute_string_with_regex")
     text = model.decode(candidate_tokens)
-    print("TEXT = %s", text)
-    # Don't allow more than 20 words
-    if len(text.split()) > 20:
-        return False
-
-    for i in range(len(data_def)):
-        if not text.startswith(data_def[i]["name"]):
-            return data_def[i]["name"].startswith(text)
-
-    return False
+    print(f"TEXT ={text}")
+    return any(t.startswith(text) for t in target)
     # return ANSWER_REGEX.fullmatch(text) is not None
 
 
@@ -43,36 +36,43 @@ def main() -> None:
 
     model = llm_s.llm_sdk.Small_LLM_Model()
     names = ""
+    # parameters = ""
     for i in range(len(data_def)):
-        names += data_def[i]["name"] + ", "
-        if i == len(data_def):
+        if i == len(data_def) - 1:
             names += data_def[i]["name"]
-    print(names)
+            # parameters += str(data_def[i]["parameters"])
+        else:
+            names += data_def[i]["name"] + ", "
+            # parameters += str(data_def[i]["parameters"]) + ", "
+    print(f"\n{names}\n")
+    # print(f"\n{parameters}\n")
     for i in range(len(data)):
         promptA = data[i]["prompt"]
         print(f"\ndata prompt [{i}]: {promptA}")
         prompt = (
+            "<|im_start|>start\n"
             "<|im_start|>system\n"
-            "You are a very useful AI, you must follow every prompt given do get your reward."
-            f"Your goal is to compare the prompt given to the data_definitions: {names}."
-            "Give the name which matchs with the prompt, give only the name matching."
-            "If name found print it and that's it you have done your job."
-            "Do not do any sentence and no repeat. Do not go over 2 words.\n"
-            "<|im_end|>\n"
-            f"<|im_start|>user\n{promptA}\n"
-            "<|im_end|>\n"
-            # "<|im_start|>assistance\n"
+            "You are a very useful AI, you must follow every prompt given to get your reward"
+            f"Here you have data_names: {names}."
+            # f"Here you have data_parameters: {parameters}."
+            "Iterate through data_names and give the data_names which matchs with the prompt."
+            # "Iterate through data_parameters same index coresponding as data_names."
+            "Respond with exactly one lines and nothing else and stop thinking: <the matching data_name>"
+            # "Line 2: <the data_parameter at the same index>"
+            # "<|im_end|>\n"
+            f"<|im_start|>user\n{promptA}\n/no_think<|im_end|>\n"
+            # "<|im_start|>think/assistance\n"
         )
 
         encoded: list[int] = model.encode(prompt).tolist()[0]
         print(f"\tinput tokens = {encoded}")
 
         generated_tokens: list[int] = []
-        for x in range(60):
+        for x in range(40):
             logits = model.get_logits_from_input_ids(encoded)
 
             # for token_id, logit in enumerate(logits):
-            #     if not token_is_good(token_id, generated_tokens, model, data_def):
+            #     if not token_is_good(token_id, generated_tokens, model):
             #         logits[token_id] = float("-inf")
 
             next_token = logits.index(max(logits))
