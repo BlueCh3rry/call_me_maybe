@@ -12,7 +12,7 @@ install:
 	python3 -m -C llm poetry install --no-root
 
 run:
-	-C llm  uv run python -m src
+	uv run python -m src
 
 debug:
 	python3 -m pdb ${NAME}
