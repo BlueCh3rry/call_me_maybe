@@ -34,12 +34,11 @@ def run_constrained_generation(
     id_to_str = build_token_cache(model, vocab_size)
 
     results = []
-
+        
     for i in range(len(data)):
         promptA = data[i]["prompt"]
         print(f"\ndata prompt [{i}]: {promptA}")
 
-        # Fix 4: proper ChatML — closed turns, no stray 'start' role, trailing assistant turn
         prompt = (
             "<|im_start|>system\n"
             "You are a very useful AI, you must follow every prompt given to get your reward. "

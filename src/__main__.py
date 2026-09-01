@@ -15,8 +15,8 @@ import re
 #     print(f"TEXT = {text}")
 #     return bool(text) and any(t.startswith(text) for t in target)
 
-def main() -> None:
-    print("Call_me_maybe")
+# def main() -> None:
+#     print("Call_me_maybe")
     # argparse
     # path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
     # path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
@@ -91,14 +91,30 @@ def main() -> None:
     # # output()
 
 
-target = (
-    "fn_add_numbers",
-    "fn_greet",
-    "fn_reverse_string",
-    "fn_get_square_root",
-    "fn_substitute_string_with_regex",
-)
-names = target  # shown to the model in the prompt text
+
+# def main2() -> None:
+#     print("Call_me_maybe_MAIN_2")
+#     path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
+#     path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
+#     # path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
+#     # path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
+#     try:
+#         with open(path_tests, "r", encoding="utf-8") as file:
+#             data = json.load(file)
+#     except FileNotFoundError:
+#         print("Error: 'function_calling_tests.json' file was not found.")
+
+#     try:
+#         with open(path_def, "r", encoding="utf-8") as file1:
+#             data_def = json.load(file1)
+#     except FileNotFoundError:
+#         print("Error: 'function_definitions.json' file was not found.")
+#     from src.constrained_decoder import run_constrained_generation
+#     from src.tes import run_constrained_json_generation
+#     gen = run_constrained_generation(data ,llm_s.llm_sdk.Small_LLM_Model(), target, names, 151642)
+#     print("gen = ", gen)
+#     jsone = run_constrained_json_generation(data ,llm_s.llm_sdk.Small_LLM_Model(), names2, 151642, schemas=None)
+#     print("json = ", jsone)
 
 
 def main2() -> None:
@@ -112,16 +128,29 @@ def main2() -> None:
             data = json.load(file)
     except FileNotFoundError:
         print("Error: 'function_calling_tests.json' file was not found.")
-
+        return
     try:
         with open(path_def, "r", encoding="utf-8") as file1:
             data_def = json.load(file1)
-    except FileNotFoundError:
+    except FileNotFoundError: 
         print("Error: 'function_definitions.json' file was not found.")
-    from src.constrained_decoder import run_constrained_generation
-    gen = run_constrained_generation(data ,llm_s.llm_sdk.Small_LLM_Model(), target, names, 151642)
-    print("gen = ", gen)
-    
+        return
+    from src.tes import run_constrained_json_generation
+    target = (
+        "fn_add_numbers",
+        "fn_greet",
+        "fn_reverse_string",
+        "fn_get_square_root",
+        "fn_substitute_string_with_regex",
+    )
+    # from src.constrained_decoder import run_constrained_generation
+    # gen = run_constrained_generation(data, llm_s.llm_sdk.Small_LLM_Model(), target, target, 151642)
+    # print("gen = ", gen)
+
+    schemas_json = json.dumps(data_def, indent=2)
+    names2 = tuple(schema["name"] for schema in data_def)
+    jsone = run_constrained_json_generation(data, llm_s.llm_sdk.Small_LLM_Model(), names2, 151642, data_def)
+    print("json = ", jsone)
 
 
 if __name__ == "__main__":
