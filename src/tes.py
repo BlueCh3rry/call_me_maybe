@@ -74,7 +74,6 @@ def parse_string_prefix(text, pos, valid_values=None):
                 "t": "\t",
             }
             if esc in simple:
-
                 out.append(simple[esc])
             elif esc == "u":
                 if pos + 4 > len(text):
@@ -111,7 +110,7 @@ def parse_number(text, pos):
     if pos >= len(text):
         raise IncompleteJSON()
     if text[pos] == "-":
-        pos += 1 
+        pos += 1
         if pos >= len(text):
             raise IncompleteJSON()
     pos, has_digits = consume_digits(text, pos)
@@ -191,13 +190,13 @@ def parse_generation(text, names, schemas):
             # pos = skip_ws(text, pos)
             if pos >= len(text):
                 raise IncompleteJSON()
-            pos, key = parse_string_prefix(text,pos,list(remaining))
+            pos, key = parse_string_prefix(text, pos, list(remaining))
             remaining.remove(key)
             # pos = skip_ws(text, pos)
             if pos >= len(text):
                 raise IncompleteJSON()
-            if text[pos] != ":":
-                raise InvalidJSON("expected ':'")
+            if text[pos] == ":":
+                raise IncompleteJSON("expected ':'")
             pos += 1
             # pos = skip_ws(text, pos)
             pos = parse_value(text, pos, schema["parameters"][key])
@@ -258,7 +257,7 @@ def json_token_is_good(token_id: int, candidate_prefix_text: str, id_to_str: dic
     token_str = id_to_str.get(token_id, "")
     if not token_str:
         return False
-    if (candidate_prefix_text and candidate_prefix_text[-1] in " \t\r\n" and token_str.strip() == ""):
+    if (candidate_prefix_text and candidate_prefix_text[-1] in " \t\r\n"):
         return False
     candidate_text = candidate_prefix_text + token_str
     status = classify_json_candidate(candidate_text, names, schemas)
@@ -282,7 +281,7 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
     test = '{"name":"fn_add_numbers","parameters":{"a":'
     print("TEEEEEEEEST =",classify_json_candidate(test, names, schemas))
 
-
+# "prompt": "<prompt given>",
     results = []
     for i in range(len(data)):
         promptA = data[i]["prompt"]
@@ -293,7 +292,7 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
             f"Here are the available functions and their parameters: {schemas}. "
             "Respond with JSON format and nothing else, in the form: "
             '{"name": "<matching function name>", "parameters": {<param>: <value>, ...}}'
-            "<|im_end|>\n"
+            "\n/no_think<|im_end|>\n"
             f"<|im_start|>user\n{promptA}\n<|im_end|>\n"
             "<|im_start|>assistant\n"
         )

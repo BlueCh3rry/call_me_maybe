@@ -119,10 +119,10 @@ import re
 
 def main2() -> None:
     print("Call_me_maybe_MAIN_2")
-    path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
-    path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
-    # path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
-    # path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
+    # path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
+    # path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
+    path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
+    path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
     try:
         with open(path_tests, "r", encoding="utf-8") as file:
             data = json.load(file)
@@ -132,7 +132,7 @@ def main2() -> None:
     try:
         with open(path_def, "r", encoding="utf-8") as file1:
             data_def = json.load(file1)
-    except FileNotFoundError: 
+    except FileNotFoundError:
         print("Error: 'function_definitions.json' file was not found.")
         return
     from src.tes import run_constrained_json_generation
