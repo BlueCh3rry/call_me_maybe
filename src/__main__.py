@@ -119,10 +119,10 @@ import re
 
 def main2() -> None:
     print("Call_me_maybe_MAIN_2")
-    # path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
-    # path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
-    path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
-    path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
+    path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
+    path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
+    # path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
+    # path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
     try:
         with open(path_tests, "r", encoding="utf-8") as file:
             data = json.load(file)
@@ -147,9 +147,9 @@ def main2() -> None:
     # gen = run_constrained_generation(data, llm_s.llm_sdk.Small_LLM_Model(), target, target, 151642)
     # print("gen = ", gen)
 
-    schemas_json = json.dumps(data_def, indent=2)
-    names2 = tuple(schema["name"] for schema in data_def)
-    jsone = run_constrained_json_generation(data, llm_s.llm_sdk.Small_LLM_Model(), names2, 151642, data_def)
+    # schemas_json = json.dumps(data_def, indent=2)
+    # names2 = tuple(schema["name"] for schema in data_def)
+    jsone = run_constrained_json_generation(data, llm_s.llm_sdk.Small_LLM_Model(), 151642, data_def)
     print("json = ", jsone)
 
 

@@ -1,6 +1,8 @@
 import json
 import llm_s.llm_sdk
+import typing
 from src.constrained_decoder import build_token_cache
+
 
 DEBUG = False
 
@@ -14,13 +16,13 @@ class InvalidJSON(Exception):
     pass
 
 
-def expect_literal_prefix(text, pos, literal):
-    for expected in literal:
+def expect_target_prefix(text, pos, Target):
+    for word in Target:
         if pos >= len(text):
             raise IncompleteJSON()
-        if text[pos] != expected:
+        if text[pos] != word:
             raise InvalidJSON(
-                f"expected {expected}, got {text[pos]}"
+                f"expected {word}, got {text[pos]}"
             )
         pos += 1
     return pos
@@ -41,24 +43,24 @@ def match_literal_prefix(text, pos, options):
         pos += 1
 
 
-def parse_string_prefix(text, pos, valid_values=None):
+def check_valid_word(text: str, pos: int, valid_words: list[str] | None=None):
     if pos >= len(text):
         raise IncompleteJSON()
     if text[pos] != '"':
         raise InvalidJSON(f'expected \'"\' at {pos}')
     pos += 1
-    out = []
+    out: list[str] = []
     while True:
         if pos >= len(text):
             raise IncompleteJSON()
-        ch = text[pos]
+        char = text[pos]
         pos += 1
-        if ch == '"':
+        if char == '"':
             content = "".join(out)
-            if valid_values is not None and content not in valid_values:
+            if valid_words is not None and content not in valid_words:
                 raise InvalidJSON(f"{content} is not an allowed value")
             return pos, content
-        if ch == "\\":
+        if char == "\\":
             if pos >= len(text):
                 raise IncompleteJSON()
             esc = text[pos]
@@ -86,21 +88,21 @@ def parse_string_prefix(text, pos, valid_values=None):
             else:
                 raise InvalidJSON(f"bad escape \\{esc}")
         else:
-            out.append(ch)
+            out.append(char)
         content = "".join(out)
-        if valid_values is not None:
-            if not any(v.startswith(content) for v in valid_values):
+        if valid_words is not None:
+            if not any(word.startswith(content) for word in valid_words):
                 raise InvalidJSON(f"{content} cannot lead to allowed value")
 
 
-def consume_digits(text, pos):
+def check_skip_digits(text: str, pos: int) -> tuple[int, bool]:
     start = pos
     while pos < len(text) and text[pos].isdigit():
         pos += 1
     return pos, pos > start
 
 
-def skip_ws(text, pos):
+def skip_ws(text: str, pos: int) -> int:
     while pos < len(text) and text[pos] in " \t\r\n":
         pos += 1
     return pos
@@ -113,35 +115,35 @@ def parse_number(text, pos):
         pos += 1
         if pos >= len(text):
             raise IncompleteJSON()
-    pos, has_digits = consume_digits(text, pos)
+    pos, has_digits = check_skip_digits(text, pos)
     if not has_digits:
         raise InvalidJSON("expected digits")
     if pos < len(text) and text[pos] == ".":
         pos += 1
-        pos, has_digits = consume_digits(text, pos)
+        pos, has_digits = check_skip_digits(text, pos)
         if not has_digits:
             raise IncompleteJSON()
     if pos < len(text) and text[pos] in "eE":
         pos += 1
         if pos < len(text) and text[pos] in "+-":
             pos += 1
-        pos, has_digits = consume_digits(text, pos)
+        pos, has_digits = check_skip_digits(text, pos)
         if not has_digits:
             raise IncompleteJSON()
     return pos
 
 
-def parse_value(text, pos, value_type):
+def param_value(text, pos, value_type):
     if value_type in ("number", "integer", "int", "float"):
         return parse_number(text, pos)
     if value_type in ("string", "str"):
-        return parse_string_prefix(text, pos)
+        return check_valid_word(text, pos)
     if value_type in ("boolean", "bool"):
         return match_literal_prefix(text, pos, ["true", "false"])
     raise InvalidJSON(f"unsupported type {value_type}")
 
 
-def parse_generation(text, names, schemas):
+def parse_generation(text, schemas):
     pos = 0
     if pos >= len(text):
         raise IncompleteJSON()
@@ -149,7 +151,7 @@ def parse_generation(text, names, schemas):
         raise InvalidJSON("expected {")
     pos += 1
     # pos = skip_ws(text, pos)
-    pos = expect_literal_prefix(text, pos, '"name"')
+    pos = expect_target_prefix(text, pos, '"name"')
     # pos = skip_ws(text, pos)
     if pos >= len(text):
         raise IncompleteJSON()
@@ -157,7 +159,8 @@ def parse_generation(text, names, schemas):
         raise InvalidJSON("expected ':'")
     pos += 1
     # pos = skip_ws(text, pos)
-    pos, name = parse_string_prefix(text, pos, list(names))
+    names = tuple(schema["name"] for schema in schemas)
+    pos, name = check_valid_word(text, pos, list(names))
     schema = next((schema for schema in schemas if schema["name"] == name), None)
     if schema is None:
         raise InvalidJSON(f"unknown function {name}")
@@ -168,7 +171,7 @@ def parse_generation(text, names, schemas):
         raise InvalidJSON("expected ','")
     pos += 1
     # pos = skip_ws(text, pos)
-    pos = expect_literal_prefix(text, pos, '"parameters"')
+    pos = expect_target_prefix(text, pos, '"parameters"')
     # pos = skip_ws(text, pos)
     if pos >= len(text):
         raise IncompleteJSON()
@@ -190,7 +193,7 @@ def parse_generation(text, names, schemas):
             # pos = skip_ws(text, pos)
             if pos >= len(text):
                 raise IncompleteJSON()
-            pos, key = parse_string_prefix(text, pos, list(remaining))
+            pos, key = check_valid_word(text, pos, list(remaining))
             remaining.remove(key)
             # pos = skip_ws(text, pos)
             if pos >= len(text):
@@ -199,7 +202,7 @@ def parse_generation(text, names, schemas):
                 raise IncompleteJSON("expected ':'")
             pos += 1
             # pos = skip_ws(text, pos)
-            pos = parse_value(text, pos, schema["parameters"][key])
+            pos = param_value(text, pos, schema["parameters"][key])
             # pos = skip_ws(text, pos)
             if pos >= len(text):
                 raise IncompleteJSON()
@@ -230,9 +233,9 @@ def parse_generation(text, names, schemas):
     return pos
 
 
-def classify_json_candidate(text, names, schemas):
+def classify_json_candidate(text, schemas):
     try:
-        parse_generation(text, names, schemas)
+        parse_generation(text, schemas)
         return "complete"
     except IncompleteJSON:
         return "incomplete"
@@ -253,14 +256,14 @@ def classify_json_candidate(text, names, schemas):
 #     return status in ("incomplete", "complete")
 
 
-def json_token_is_good(token_id: int, candidate_prefix_text: str, id_to_str: dict[int, str], names: tuple[str, ...], schemas: list[dict]) -> bool:
+def json_token_is_good(token_id: int, candidate_prefix_text: str, id_to_str: dict[int, str], schemas: list[dict]) -> bool:
     token_str = id_to_str.get(token_id, "")
     if not token_str:
         return False
     if (candidate_prefix_text and candidate_prefix_text[-1] in " \t\r\n"):
         return False
     candidate_text = candidate_prefix_text + token_str
-    status = classify_json_candidate(candidate_text, names, schemas)
+    status = classify_json_candidate(candidate_text, schemas)
     if DEBUG:
         print(
             f"token={token_id} "
@@ -271,7 +274,7 @@ def json_token_is_good(token_id: int, candidate_prefix_text: str, id_to_str: dic
     return status in ("incomplete", "complete")
 
 
-def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small_LLM_Model, names: tuple[str, ...], vocab_size: int, schemas: list[dict]):
+def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small_LLM_Model, vocab_size: int, schemas: list[dict]):
     if schemas is None:
         print("NO DATA_REF/SCEHMAS")
     from src.constrained_decoder import build_token_cache
@@ -279,10 +282,9 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
 
 
     test = '{"name":"fn_add_numbers","parameters":{"a":'
-    print("TEEEEEEEEST =",classify_json_candidate(test, names, schemas))
+    print("TEEEEEEEEST =",classify_json_candidate(test, schemas))
 
-# "prompt": "<prompt given>",
-    results = []
+    results: list[dict[str, typing.Any]] = []
     for i in range(len(data)):
         promptA = data[i]["prompt"]
         print(f"\ndata prompt [{i}]: {promptA}")
@@ -291,7 +293,7 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
             "You are a very useful AI, you must follow every prompt given to get your reward. "
             f"Here are the available functions and their parameters: {schemas}. "
             "Respond with JSON format and nothing else, in the form: "
-            '{"name": "<matching function name>", "parameters": {<param>: <value>, ...}}'
+            '{"prompt": "<prompt given>", "name": "<matching function name>", "parameters": {<param>: <value>, ...}}'
             "\n/no_think<|im_end|>\n"
             f"<|im_start|>user\n{promptA}\n<|im_end|>\n"
             "<|im_start|>assistant\n"
@@ -302,14 +304,14 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
 
         for x in range(40):
             current_text = model.decode(generated_tokens)
-            status = classify_json_candidate(current_text, names, schemas)
+            status = classify_json_candidate(current_text, schemas)
             if status == "complete":
                 break
             logits = model.get_logits_from_input_ids(encoded)
             good_count = 0
             masked_logits = list(logits)
             for token_id in range(len(logits)):
-                if json_token_is_good(token_id, current_text, id_to_str, names, schemas):
+                if json_token_is_good(token_id, current_text, id_to_str, schemas):
                     good_count += 1
                 else:
                     masked_logits[token_id] = float("-inf")
@@ -330,6 +332,11 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
         print(f"\t\nRESULT = {final_text}")
         try:
             parsed = json.loads(final_text)
+            path_output = "C:/Users/Red/home/42Cursus/call_me_maybe/data/output/outputfile.json"
+            with open(path_output, "w", encoding="utf-8") as f:
+                print("OPENINNNNNNNNNNNNNGGGGGGGGGGGG FIIIIIIIIIIIIILEEEEEEEEEEEEEEEEEEE:", path_output)
+                json.dump(parsed, f, indent=2)
+
         except Exception:
             parsed = None
         results.append({"raw": final_text, "parsed": parsed})
