@@ -56,30 +56,21 @@ def run_constrained_generation(
         generated_tokens: list[int] = []
 
         for x in range(10):
-            # Fix 1: exact-match early exit BEFORE generating another token
             current_text = model.decode(generated_tokens) if generated_tokens else ""
             if current_text in target:
                 break
-
             logits = model.get_logits_from_input_ids(encoded)
-
-            # Fix 3: build a fresh masked copy instead of mutating while iterating
             masked_logits = list(logits)
             for token_id in range(len(logits)):
                 if not token_is_good(token_id, current_text, id_to_str, target):
                     masked_logits[token_id] = float("-inf")
             logits = masked_logits
-
             next_token = logits.index(max(logits))
-
-            # Fix 1 (part 2): if nothing is valid, stop instead of accepting a masked token
             if logits[next_token] == float("-inf"):
                 print("\n\tNo valid continuation — stopping\n")
                 break
-
             generated_tokens.append(next_token)
             encoded.append(next_token)
-
         final_text = model.decode(generated_tokens) if generated_tokens else ""
         print(f"\t\nRESULT = {final_text}")
         results.append(final_text)
