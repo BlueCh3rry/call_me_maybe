@@ -6,8 +6,6 @@ from src.constrained_decoder import build_token_cache
 
 DEBUG = False
 
-# ---------- JSON prefix validator ----------
-
 
 class IncompleteJSON(Exception):
     pass
@@ -24,10 +22,7 @@ def expect(text, pos, expected):
         return end
     if expected.startswith(actual):
         raise IncompleteJSON()
-    raise InvalidJSON(
-        f"expected {expected!r}, got {actual!r}"
-    )
-
+    raise InvalidJSON(f"expected '{expected}', got '{actual}'")
 
 
 def match(text, pos, expected):
@@ -61,14 +56,6 @@ def string(text, pos, allowed=None):
                 raise InvalidJSON(f"{value!r} not allowed")
             return pos, value
         if c == "\\":
-            # FIX 1: when `allowed` is a fixed enum of plain identifiers
-            # (e.g. function names), a backslash can never legitimately
-            # appear. Without this, a stray "\" gets classified as
-            # "incomplete" (not invalid) and the model is free to keep
-            # bolting on garbage characters one token at a time until it
-            # finally accumulates 4 chars for a \uXXXX check and only
-            # then fails — by which point several bad tokens are already
-            # locked into the generated sequence.
             if allowed is not None:
                 raise InvalidJSON(
                     "escape sequence not valid inside enum-constrained string"
@@ -104,13 +91,6 @@ def string(text, pos, allowed=None):
 
 
 def number(text, pos, max_digits=17):
-    # FIX 2: cap how many digits we'll accept. A trailing run of digits
-    # at the end of the buffer is always ambiguous (the model could
-    # always emit one more), so without a cap it's *always* classified
-    # "incomplete" and the digit token is always "allowed" — which is
-    # exactly the condition that lets a weak/greedy model loop forever
-    # on "0". Once the cap is exceeded we raise InvalidJSON, which masks
-    # out further digits and pushes the model toward "," or "}".
     start = pos
     if pos < len(text) and text[pos] == "-":
         pos += 1
@@ -158,11 +138,6 @@ def value(text, pos, schema):
 def parse_generation(text, schemas, prompt):
     pos = 0
     pos = expect(text, pos, "{")
-    # NOTE: "prompt" field intentionally not required here — see FIX 3
-    # below, which changes the system prompt to match this parser
-    # instead of the other way around. If you'd rather keep the
-    # "prompt" field in the output, re-enable these four lines instead
-    # of editing the system prompt.
     pos = expect(text, pos, '"prompt"')
     pos = expect(text, pos, ":")
     pos, _ = string(text, pos, [prompt])
@@ -199,7 +174,6 @@ def parse_generation(text, schemas, prompt):
             if text[pos] != ":":
                 raise InvalidJSON("expected ':'")
             pos += 1
-            # parse taking schema type from functions_def
             pos = value(text, pos, params[key])
             if pos >= len(text):
                 raise IncompleteJSON()
@@ -213,7 +187,7 @@ def parse_generation(text, schemas, prompt):
                     raise InvalidJSON("trailing comma")
                 continue
             if text[pos] == "}":
-                pos += 1
+                pos += 2
                 break
             raise InvalidJSON("expected ',' or '}'")
     if remaining:
@@ -258,13 +232,6 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
             "You are a very useful AI, you must follow every prompt given to get your reward. "
             f"Here are the available functions and their parameters: {schemas}, keep also the prompt given in mind. "
             "Respond with JSON format and nothing else, in the form: "
-            # FIX 3: the described output shape now matches what        
-            # parse_generation actually accepts (no top-level "prompt"
-            # field). Previously the model was told to start with
-            # {"prompt": ...} but the grammar hard-required "name" to
-            # come first, so any token path toward "prompt" was masked
-            # to -inf immediately — actively fighting the instructions
-            # the model was just given, right at the start of decoding.
             '{"name": "<matching function name>", "parameters": {<param>: <value>, ...}}'
             "\n/no_think<|im_end|>\n"
             f"<|im_start|>user\n{promptA}\n<|im_end|>\n"
@@ -296,7 +263,7 @@ def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small
                 break
             generated_tokens.append(next_token)
 
-            print(f"  step {x}: current_text={current_text!r} |status={status}|\n")
+            print(f"  step {x}: current_text={current_text} |status={status}|\n")
 
             encoded.append(next_token)
         print(f"generated_tokens = {generated_tokens}")
