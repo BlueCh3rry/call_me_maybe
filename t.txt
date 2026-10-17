@@ -1,475 +1,529 @@
+==============================================================================
+ CONSTRAINED JSON DECODER - HOW IT WORKS
+ (src/json_formater.py and src/__main__.py)
+==============================================================================
 
-YO i need some fix on my code or prompt to get a correct json output
-So the problems are for the : fn_reverse_string and fn_substitute_string_with_regex
-The parameters generated and constrained are not good results.
-
-1. fix the result so the parameters generated are correctly done
-2. optimize the code to run it all those prompts below under 5 min (currently taking over 9 min)
-
-Prompts :
-[
-  {
-    "prompt": "What is the sum of 2 and 3?"
-  },
-  {
-    "prompt": "What is the sum of 265 and 345?"
-  },
-  {
-    "prompt": "Greet shrek"
-  },
-  {
-    "prompt": "Greet john"
-  },
-  {
-    "prompt": "Reverse the string 'hello'"
-  },
-  {
-    "prompt": "Reverse the string 'world'"
-  },
-  {
-    "prompt": "What is the square root of 16?"
-  },
-  {
-    "prompt": "Calculate the square root of 144"
-  },
-  {
-    "prompt": "Replace all numbers in \"Hello 34 I'm 233 years old\" with NUMBERS"
-  },
-  {
-    "prompt": "Replace all vowels in 'Programming is fun' with asterisks"
-  },
-  {
-    "prompt": "Substitute the word 'cat' with 'dog' in 'The cat sat on the mat with another cat'"
-  }
-]
-here what i get right now with this code main and json_formater:
-
-import argparse
-import llm_s.llm_sdk
-import json
-import re
+TABLE OF CONTENTS
+  1. The big idea
+  2. The regexes, one by one
+  3. Every function and class in json_formater.py
+  4. Every function in __main__.py
+  5. Step-by-step example: "Greet shrek"
+  6. Step-by-step example: "What is the sum of 2 and 3?"
+  7. Visual: the whole pipeline
+  8. My opinion on your output
+  9. Suggested improvements
 
 
-# ANSWER_REGEX = re.compile(r"^Answer:\s*[A-Za-z0-9 ,.!?'\"()-]*$")
+==============================================================================
+1. THE BIG IDEA
+==============================================================================
+
+A language model (Qwen3-0.6B here) does not output text directly. At every
+step it outputs one score (a "logit") for EACH token in its vocabulary
+(~150,000 of them). Normally you pick the highest score. The problem: the
+highest score may be a token that breaks your JSON.
+
+Constrained decoding fixes this with a simple loop:
+
+    1. Ask the model for the logits.
+    2. Work out which tokens are ALLOWED at this exact point.
+    3. Set every other logit to -infinity (they can never win).
+    4. Pick the highest remaining logit (argmax).
+
+On top of that, this code splits the output in two kinds of parts:
+
+    FORCED parts  -> we write them ourselves, the model is never asked
+                     (braces, commas, the keys "name", "parameters", "a":)
+    FREE parts    -> the model chooses, but only among allowed tokens
+                     (the function name, each argument value)
+
+Because the structure is built by us, the output is valid by construction.
+The final result is built as a Python dict, so there is no json.loads() at
+the end that could fail.
+
+Why it is fast: no forward pass is wasted on forced text, and we never scan
+all 150k tokens for validity.
 
 
-def main2() -> None:
-    print("Call_me_maybe_MAIN_2")
-    path_tests = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/function_calling_tests.json"
-    path_def = "C:/Users/Red/home/42Cursus/call_me_maybe/data/input/functions_definition.json"
-    # path_def = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/functions_definition.json"
-    # path_tests = "/home/mmakhmae/sgoinfre/call_me_maybe/data/input/function_calling_tests.json"
-    try:
-        with open(path_tests, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except FileNotFoundError:
-        print("Error: 'function_calling_tests.json' file was not found.")
-        return
-    try:
-        with open(path_def, "r", encoding="utf-8") as file1:
-            data_def = json.load(file1)
-    except FileNotFoundError:
-        print("Error: 'function_definitions.json' file was not found.")
-        return
-    from src.json_formater import run_constrained_json_generation
-    target = (
-        "fn_add_numbers",
-        "fn_greet",
-        "fn_reverse_string",
-        "fn_get_square_root",
-        "fn_substitute_string_with_regex",
-    )
-    # from src.constrained_decoder import run_constrained_generation
-    # gen = run_constrained_generation(data, llm_s.llm_sdk.Small_LLM_Model(), target, target, 151642)
-    # print("gen = ", gen)
+==============================================================================
+2. THE REGEXES, ONE BY ONE
+==============================================================================
 
-    # schemas_json = json.dumps(data_def, indent=2)
-    # names2 = tuple(schema["name"] for schema in data_def)
-    jsone = run_constrained_json_generation(data, llm_s.llm_sdk.Small_LLM_Model(), 151642, data_def)
-    print("json = ", jsone)
-    path_output = "C:/Users/Red/home/42Cursus/call_me_maybe/data/output/outputfile.json"
+All of them are used with fullmatch(), which means "the WHOLE string must
+match the pattern", not just a part of it.
 
-    results = []
-    for prompt_entry, raw_text in zip(data, jsone):
-        try:
-            parsed_call = json.loads(raw_text)
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse model output for prompt {prompt_entry['prompt']!r}: {e}")
-            continue  # or decide how you want partial failures handled — see note below
-        results.append({
-            "prompt": prompt_entry["prompt"],
-            "name": parsed_call["name"],
-            "parameters": parsed_call["parameters"],
-        })
+------------------------------------------------------------------------------
+STR_BODY = (?:[^"\\\x00-\x1f]|\\.)*\\?
+------------------------------------------------------------------------------
+Purpose: "is this text a valid inside-of-a-JSON-string that is still open?"
+(the closing quote has NOT been written yet).
 
-    with open(path_output, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+Reading it from left to right:
 
+  (?: ... )*       a group repeated 0 or more times. Each repetition is ONE
+                   "unit" of the string, and a unit is one of two things:
+  [^"\\\x00-\x1f]    option A: any single character that is NOT a quote,
+                     NOT a backslash, and NOT a control character
+                     (\x00 to \x1f covers newline, tab, etc.).
+  \\.                option B: a backslash followed by any character, i.e. a
+                     complete escape pair such as \n  \"  \d  \\
+  \\?              at the very end, ONE optional lone backslash. This is
+                   needed because a token may end exactly on a backslash
+                   (the escape is not finished yet). Example: the text
+                   `abc\` is valid so far, the next token will finish it.
 
-if __name__ == "__main__":
-    main2()
+Examples:
+  hello          -> match
+  hello world    -> match
+  say \"hi\"     -> match   (escaped quotes are fine)
+  \d+            -> match   (so regex parameters work)
+  abc\           -> match   (unfinished escape, allowed)
+  ab"c           -> NO      (a raw quote would close the string)
+  line1<newline> -> NO      (raw control character)
 
-import json
-import llm_s.llm_sdk
-import typing
-from src.constrained_decoder import build_token_cache
+------------------------------------------------------------------------------
+STR_DONE = (?:[^"\\\x00-\x1f]|\\.)*
+------------------------------------------------------------------------------
+Same as STR_BODY but WITHOUT the final optional backslash. It is used on the
+text found BEFORE a closing quote. A string cannot legally end on a lone
+backslash, because that backslash would escape the closing quote.
 
+------------------------------------------------------------------------------
+NUM_PREFIX = -?(?:\d+(?:\.\d*)?)?
+------------------------------------------------------------------------------
+Purpose: "could this text become a valid number if we keep typing?"
+Everything is optional, so even an empty string matches.
 
-DEBUG = False
+  -?                 optional minus sign
+  (?: ... )?         the whole digits part is optional (so "-" alone is ok)
+  \d+                one or more digits
+  (?:\.\d*)?         optional dot, then ZERO or more digits (so "12." is ok)
 
+Matches:  ""   "-"   "12"   "12."   "12.5"   "-0.25"
+Rejects:  "1-2"   "1.2.3"   "abc"   ".5" (must start with a digit)
 
-class IncompleteJSON(Exception):
-    pass
+------------------------------------------------------------------------------
+INT_PREFIX = -?\d*
+------------------------------------------------------------------------------
+Same idea for integers: optional minus, then any number of digits.
+Matches "", "-", "7", "-42". Rejects "7.5".
 
+------------------------------------------------------------------------------
+NUM_FULL = -?\d+(?:\.\d+)?
+------------------------------------------------------------------------------
+Purpose: "is this text a COMPLETE, finished number?"
+Needs at least one digit, and if there is a dot it needs digits after it.
+Matches "5", "-3", "12.5". Rejects "", "-", "12." (unfinished).
 
-class InvalidJSON(Exception):
-    pass
+------------------------------------------------------------------------------
+INT_FULL = -?\d+
+------------------------------------------------------------------------------
+Complete integer: optional minus, at least one digit.
 
+Why two regexes (PREFIX and FULL) for numbers?
+  PREFIX answers "may this token be added?"   (allowed while typing)
+  FULL   answers "may the number end now?"    (allowed to stop)
+  When FULL is true, the tokens that start with "," or "}" become allowed too.
+  If the model picks one of them, it means "I'm done".
 
-def expect(text, pos, expected):
-    end = pos + len(expected)
-    actual = text[pos:end]
-    if actual == expected:
-        return end
-    if expected.startswith(actual):
-        raise IncompleteJSON()
-    raise InvalidJSON(
-        f"expected {expected!r}, got {actual!r}"
-    )
+------------------------------------------------------------------------------
+ESC = \\(u[0-9a-fA-F]{4}|["\\/nrt])
+------------------------------------------------------------------------------
+Purpose: find the REAL JSON escapes inside the string the model wrote, so we
+can turn them into the actual characters.
 
+  \\                      a literal backslash
+  u[0-9a-fA-F]{4}         u + exactly 4 hex digits  (unicode, e.g. \u00e9)
+  |                       or
+  ["\\/nrt]               one of: "  \  /  n  r  t
 
+Notice what is NOT here: b, f, d, w, s ...
+That is on purpose. In a regex parameter, \b \w \d \s must stay as they are.
+Only the escapes listed above are converted.
 
-def match(text, pos, expected):
-    if isinstance(expected, str):
-        expected = [expected]
-    remaining = text[pos:]
-    for option in expected:
-        if remaining.startswith(option):
-            return pos + len(option), option
-    for option in expected:
-        if option.startswith(remaining):
-            raise IncompleteJSON()
-    raise InvalidJSON(
-        f"expected one of {expected}, got {remaining!r}"
-    )
-
-
-def string(text, pos, allowed=None):
-    if pos >= len(text):
-        raise IncompleteJSON()
-    if text[pos] != '"':
-        raise InvalidJSON(f'expected " at {pos}')
-    pos += 1
-    out = []
-    while pos < len(text):
-        c = text[pos]
-        pos += 1
-        if c == '"':
-            value = "".join(out)
-            if allowed is not None and value not in allowed:
-                raise InvalidJSON(f"{value!r} not allowed")
-            return pos, value
-        if c == "\\":
-            if allowed is not None:
-                raise InvalidJSON(
-                    "escape sequence not valid inside enum-constrained string"
-                )
-            if pos >= len(text):
-                raise IncompleteJSON()
-            c = text[pos]
-            pos += 1
-            escapes = {
-                '"': '"', "\\": "\\", "/": "/",
-                "b": "\b", "f": "\f", "n": "\n",
-                "r": "\r", "t": "\t",
-            }
-            if c in escapes:
-                out.append(escapes[c])
-            elif c == "u":
-                if pos + 4 > len(text):
-                    raise IncompleteJSON()
-                h = text[pos:pos + 4]
-                if not all(x in "0123456789abcdefABCDEF" for x in h):
-                    raise InvalidJSON("bad unicode escape")
-                out.append(chr(int(h, 16)))
-                pos += 4
-            else:
-                raise InvalidJSON(f"bad escape \\{c}")
-        else:
-            out.append(c)
-        if allowed is not None:
-            value = "".join(out)
-            if not any(x.startswith(value) for x in allowed):
-                raise InvalidJSON(f"{value!r} cannot continue")
-    raise IncompleteJSON()
+------------------------------------------------------------------------------
+SIMPLE_ESC (a dict, not a regex, but works together with ESC)
+------------------------------------------------------------------------------
+  '"' -> '"'    '\\' -> '\'    '/' -> '/'
+  'n' -> newline   'r' -> carriage return   't' -> tab
 
 
-def number(text, pos, max_digits=17):
-    # FIX 2: cap how many digits we'll accept. A trailing run of digits
-    # at the end of the buffer is always ambiguous (the model could
-    # always emit one more), so without a cap it's *always* classified
-    # "incomplete" and the digit token is always "allowed" — which is
-    # exactly the condition that lets a weak/greedy model loop forever
-    # on "0". Once the cap is exceeded we raise InvalidJSON, which masks
-    # out further digits and pushes the model toward "," or "}".
-    start = pos
-    if pos < len(text) and text[pos] == "-":
-        pos += 1
-    digit_start = pos
-    while pos < len(text) and text[pos].isdigit():
-        pos += 1
-        if pos - digit_start > max_digits:
-            raise InvalidJSON("number too long")
-    if pos < len(text) and text[pos] == ".":
-        pos += 1
-        frac_start = pos
-        while pos < len(text) and text[pos].isdigit():
-            pos += 1
-            if pos - frac_start > max_digits:
-                raise InvalidJSON("number too long")
-    if pos < len(text) and text[pos] in "eE":
-        pos += 1
-        if pos < len(text) and text[pos] in "+-":
-            pos += 1
-        while pos < len(text) and text[pos].isdigit():
-            pos += 1
-    if pos == start:
-        raise InvalidJSON("expected number")
-    if pos == len(text):
-        raise IncompleteJSON()
-    return pos
+==============================================================================
+3. EVERY FUNCTION AND CLASS IN json_formater.py
+==============================================================================
+
+Constants
+---------
+DEBUG               set True to print extra info (currently unused in the
+                    new decoder, kept for your own debugging).
+MAX_STRING_TOKENS   hard cap: a string value may use at most 60 tokens.
+                    Guarantees the loop always ends.
+MAX_NUMBER_CHARS    hard cap: a number may have at most 20 characters.
+INT_TYPES, NUM_TYPES, BOOL_TYPES
+                    the type names accepted for integers, floats, booleans
+                    ("int"/"integer", "float"/"number", "bool"/"boolean").
+
+unescape(raw)
+-------------
+Takes the raw text the model wrote inside quotes and converts real JSON
+escapes into characters, using ESC and SIMPLE_ESC.
+  raw:      C:\\new   -> only \\ is converted
+  raw:      a\nb      -> "a", newline, "b"
+  raw:      \d+       -> stays \d+   (d is not a JSON escape)
+The inner function sub() is called by ESC.sub() for every match found.
+
+byte_decoder()
+--------------
+Qwen uses a "byte-level BPE" vocabulary. Raw bytes are stored as printable
+stand-in characters. For example the byte for a space is stored as "Ġ", and
+a newline as "Ċ". This function builds the dictionary stand-in char -> byte
+(the same table GPT-2 uses). It lets us turn vocabulary entries back into
+real text, for ANY character, not just space and newline.
+
+load_vocabulary(model)
+----------------------
+Reads the vocab JSON file ({token_text: id}) and returns a list where
+tokens[id] = real text of that token. For each token it:
+  1. maps every stand-in character back to its byte (byte_decoder),
+  2. decodes the bytes as UTF-8.
+Tokens that are only half of a multi-byte character fail to decode and are
+stored as None. They are never used (so an accent split across two byte
+tokens cannot be produced - a known limit).
+
+build_prompt(user_prompt, schemas)
+----------------------------------
+Builds the text sent to the model, in Qwen's chat format:
+  system : task description, the list of functions with their parameters,
+           and the rules (copy strings exactly, how to write regexes...)
+  user   : the user's request
+  assistant: (empty, the model continues from here)
+"/no_think" disables Qwen3's thinking mode so it answers directly.
+The rules are GENERIC. They do not contain the answers to your examples.
+
+class Decoder
+-------------
+Holds the model, the schemas and the precomputed token tables.
+
+  __init__(model, schemas)
+      Runs once. Loads the vocabulary and builds:
+        by_text     dict  text -> [token ids with that exact text]
+        number_ids  all tokens made only of the characters 0-9 . -
+        end_ids     all tokens whose text STARTS with "," or "}"
+        end_set     the same as end_ids as a set (fast "in" checks)
+      Doing this once means each step only filters short lists.
+
+  encode(text)
+      Text -> list of token ids through the model's tokenizer.
+      Returns [] for empty text.
+
+  logits(ids)
+      Runs ONE forward pass on the ids and returns the scores as a numpy
+      array. This is the slow operation, so the code tries to call it as
+      rarely as possible.
+
+  pick(ids, allowed)
+      The masking step. Makes an array full of -inf, copies the real logits
+      only at the allowed positions, and returns argmax. Anything not in
+      `allowed` can never be chosen. Raises ValueError if allowed is empty.
+
+  choose(ids, options)
+      The model picks ONE string out of a fixed list (function names, true /
+      false, enum values). Loop:
+        - keep the options that start with the text chosen so far;
+        - if only ONE option is left, append the rest of it with NO model
+          call and return (the auto-complete shortcut);
+        - otherwise build the allowed ids: for each remaining option,
+          every prefix of what is left is looked up in by_text;
+        - call pick(), append the token, repeat.
+
+  generate_string(ids)
+      Generates a string value. The opening quote is already in ids. Each
+      step:
+        - get logits, sort ids from best to worst (np.argsort(-lg));
+        - walk down the list and take the FIRST token that works:
+            a) STR_BODY.fullmatch(raw + token): the string continues,
+               so keep the token and go to the next step;
+            b) the token contains a quote ": cut the token at the quote;
+               if the part before it is a valid string (STR_DONE), the
+               string is finished -> return unescape(raw + that part).
+        - the closing quote is NOT added to ids; the caller forces it.
+      The token with the quote is thrown away on purpose: it may be glued
+      to other characters (like `."`), and we write the quote ourselves.
+      Typical cost: 1 to 3 checks per step instead of 150,000.
+
+  generate_number(ids, integer)
+      Generates a number. Each step:
+        - allowed = number_ids that keep text matching NUM_PREFIX
+          (or INT_PREFIX for integers);
+        - if the text is already a complete number (NUM_FULL / INT_FULL),
+          also allow end_ids ("," or "}" tokens);
+        - pick(); if the winner is an end token, the number is finished
+          (that token is dropped); otherwise append it and continue.
+      At the end it fixes an unfinished "12." -> "12", and an empty or "-"
+      result -> "0". Returns int or float depending on `integer`.
+
+  decode_call(request, schemas)
+      The main routine for ONE prompt. It builds the context step by step:
+        1. prompt text + forced   {"name": "
+        2. choose() the function name (each name gets a closing quote so
+           "fn_add" cannot be mistaken for the start of "fn_add_numbers")
+        3. forced   , "parameters": {
+        4. for each parameter of that function, in definition order:
+             - forced   "key":
+             - number   -> generate_number()
+             - boolean  -> choose(["true","false"])
+             - enum     -> choose() among the enum values
+             - string   -> forced opening quote, generate_string(), then
+                           the closing quote is forced with the next chunk
+      Returns {"prompt":..., "name":..., "parameters":{...}}.
+
+run_constrained_json_generation(data, model, schemas)
+-----------------------------------------------------
+The loop over all prompts. Builds the Decoder once (vocab loaded once), then
+for each prompt calls decode_call inside try/except. If one prompt fails,
+it prints the error and stores None, and the run continues.
 
 
-def value(text, pos, schema):
-    if pos >= len(text):
-        raise IncompleteJSON()
-    typ = schema["type"]
-    if typ in ("str", "string"):
-        pos, _ = string(text, pos)
-        return pos
-    if typ in ("int", "integer", "float", "number"):
-        return number(text, pos)
-    if typ in ("bool", "boolean"):
-        pos, _ = match(text, pos, ["true", "false"])
-        return pos
-    raise InvalidJSON(f"unsupported type: {typ}")
+==============================================================================
+4. EVERY FUNCTION IN __main__.py
+==============================================================================
+
+load_json(path, what)
+    Opens a JSON file and returns its content. Gives a clear message and
+    exits for: file missing, path is a directory, no permission, invalid
+    JSON, invalid UTF-8.
+
+validate_definitions(raw)
+    Checks the definitions file. It must be a list. Each entry needs a
+    string "name"; duplicate names are skipped; "parameters" must be a dict
+    whose every value is a dict with a known "type". Bad entries are
+    skipped with a warning. If none are left, the program exits.
+
+validate_prompts(raw)
+    Checks the input file. It must be a list; each entry needs a non-empty
+    string "prompt". Bad entries are skipped with a warning.
+
+parse_args()
+    argparse with three options (all have defaults):
+      --functions_definition   --input   --output
+
+main()
+    parse args -> load + validate both files -> load the model -> run the
+    decoder -> drop failed prompts (None) -> create the output folder if
+    needed -> write the JSON file -> print "Wrote X/Y results".
+    The __main__ guard catches Ctrl+C and exits with code 130.
+
+Command:
+    uv run python -m src --functions_definition def.json --input prompts.json --output out.json
 
 
+==============================================================================
+5. STEP-BY-STEP EXAMPLE: "Greet shrek"
+==============================================================================
 
-def parse_generation(text, schemas, prompt):
-    pos = 0
-    pos = expect(text, pos, "{")
-    pos = expect(text, pos, '"prompt"')
-    pos = expect(text, pos, ":")
-    pos, _ = string(text, pos, [prompt])
-    pos = expect(text, pos, ",")
-    pos = expect(text, pos, '"name"')
-    pos = expect(text, pos, ":")
-    names = [s["name"] for s in schemas]
-    pos, name = string(text, pos, names)
-    schema = next(
-        (s for s in schemas if s["name"] == name),
-        None,
-    )
-    if schema is None:
-        raise InvalidJSON("unknown function")
+(The exact token splits below are illustrative; the real tokenizer may cut
+the text differently, but the logic is identical.)
 
-    pos = expect(text, pos, ",")
-    pos = expect(text, pos, '"parameters"')
-    pos = expect(text, pos, ":")
-    pos =  expect(text, pos, "{")
+Functions known: fn_add_numbers, fn_greet, fn_reverse_string,
+                 fn_get_square_root, fn_substitute_string_with_regex
 
-    params = schema["parameters"]
-    remaining = set(params)
+STEP A - build the context (no model call, only tokenizing)
+    ids = encode( system rules + functions + "Greet shrek" + assistant: )
 
-    if pos < len(text) and text[pos] == "}":
-        pos += 1
-    else:
-        while True:
-            if not remaining:
-                raise InvalidJSON("no params")
-            pos, key = string(text, pos, list(remaining))
-            remaining.remove(key)
-            if pos >= len(text):
-                raise IncompleteJSON()
-            if text[pos] != ":":
-                raise InvalidJSON("expected ':'")
-            pos += 1
-            pos = value(text, pos, params[key])
-            if pos >= len(text):
-                raise IncompleteJSON()
-            if text[pos] == ",":
-                if not remaining:
-                    raise InvalidJSON("trailing comma with no remaining params")
-                pos += 1
-                if pos >= len(text):
-                    raise IncompleteJSON()
-                if text[pos] == "}":
-                    raise InvalidJSON("trailing comma")
-                continue
-            if text[pos] == "}":
-                pos += 2
-                break
-            raise InvalidJSON("expected ',' or '}'")
-    if remaining:
-        raise InvalidJSON(f"missing: {remaining}")
-    if pos != len(text):
-        raise InvalidJSON("trailing characters")
-    return pos
+STEP B - force the start (no model call)
+    ids += encode('{"name": "')
 
+    context now ends with:   ... assistant: {"name": "
 
-def classify_json_candidate(text, schemas, prompt):
-    try:
-        parse_generation(text, schemas, prompt)
-        return "complete"
-    except IncompleteJSON:
-        return "incomplete"
-    except InvalidJSON:
-        return "invalid"
+STEP C - choose the function name (model is asked)
+    options = ['fn_add_numbers"', 'fn_greet"', 'fn_reverse_string"',
+               'fn_get_square_root"', 'fn_substitute_string_with_regex"']
+    text so far = ""     -> 5 options left -> ask the model
+    allowed tokens = tokens that are a prefix of "fn_..." of any option
+    Model gives the highest logit to a token like "fn" or "fn_".
+    Mask everything else with -inf -> argmax -> "fn_"
+    text so far = "fn_"  -> still 5 options -> ask again
+    allowed: "add", "greet", "reverse", "get", "substitute" and their
+    partial prefixes. Because the request says "Greet", the model scores
+    "greet" highest -> text = "fn_greet"
+    Now ONLY ONE option starts with "fn_greet" -> AUTO-COMPLETE:
+    append the remaining  "\""  to ids with NO model call.
+
+    name = "fn_greet"
+    Visual of the mask at the 2nd step:
+
+        token       logit    allowed?   after mask
+        "greet"      9.1       yes         9.1   <- winner
+        "add"        4.0       yes         4.0
+        "reverse"    3.2       yes         3.2
+        "hello"      7.5       NO         -inf
+        "{"          6.0       NO         -inf
+
+STEP D - first (and only) parameter "name" is a string
+    forced = ', "parameters": {' + '"name": ' + '"'
+    ids += encode(forced)
+
+    context now ends with:   ... {"name": "fn_greet", "parameters": {"name": "
+
+STEP E - generate_string loop
+    Round 1: model logits -> sort best to worst:
+        "sh"   -> raw + "sh" matches STR_BODY      -> keep   raw = "sh"
+    Round 2: best token "rek" -> matches STR_BODY  -> keep   raw = "shrek"
+    Round 3: best token might be '"' or '",' or '"}':
+        contains a quote at index 0 -> part before it = ""
+        STR_DONE.fullmatch("shrek" + "") -> OK
+        -> the string is finished, return unescape("shrek") = "shrek"
+        (the quote token is NOT added to ids)
+
+STEP F - build the result
+    {"prompt": "Greet shrek",
+     "name": "fn_greet",
+     "parameters": {"name": "shrek"}}
+
+Model forward passes: about 2 (name) + 3 (string) = 5.
+The old version needed around 40-60 for the same prompt.
 
 
-def json_token_is_good(token_id: int, prefix: str, id_to_str: dict[int, str], schemas: list[dict], prompt: str) -> bool:
-    token = id_to_str.get(token_id)
-    if not token:
-        return False
-    status = classify_json_candidate(prefix + token, schemas, prompt)
-    return status != "invalid"
+==============================================================================
+6. STEP-BY-STEP EXAMPLE: "What is the sum of 2 and 3?"
+==============================================================================
+
+STEP A/B   same as before: context + forced   {"name": "
+
+STEP C     choose name -> "fn_add_numbers" (a few model calls, then
+           auto-complete once only one option remains)
+
+STEP D     parameter "a" is a number
+           forced = ', "parameters": {' + '"a": '   (no opening quote)
+           ids += encode(forced)
+
+STEP E     generate_number(integer=False), text = ""
+           allowed = number_ids where NUM_PREFIX.fullmatch("" + token)
+           (digit tokens, "-", "." ... but not letters)
+           text "" is not a complete number -> end tokens NOT allowed yet
+           model picks "2"  -> text = "2"
+           Now NUM_FULL.fullmatch("2") is True -> end_ids are added to the
+           allowed list (tokens starting with "," or "}")
+           model picks ","  (or ", ") -> it is in end_set -> STOP,
+           the token is dropped.
+           result: float("2") = 2.0
+
+STEP F     parameter "b": forced = ', ' + '"b": '
+           (the comma comes from the forced text, since the model's own
+           "," was dropped)
+           same loop -> text "3" -> end token "}" -> stop -> 3.0
+
+STEP G     {"prompt": "...", "name": "fn_add_numbers",
+            "parameters": {"a": 2.0, "b": 3.0}}
 
 
-def run_constrained_json_generation(data: list[dict], model: llm_s.llm_sdk.Small_LLM_Model, vocab_size: int, schemas: list[dict]):
-    if schemas is None:
-        print("NO DATA_REF/SCEHMAS")
-    id_to_str = build_token_cache(model, vocab_size)
+==============================================================================
+7. VISUAL: THE WHOLE PIPELINE
+==============================================================================
 
-    # test = '{"name":"fn_add_numbers","parameters":{"a":'
-    # print("TEEEEEEEEST =", classify_json_candidate(test, schemas))
+ prompts.json ----+
+                  |            +------------------------------------------+
+ definitions.json-+--> validate |  load_json / validate_*  (errors exit)   |
+                                +----------------------+-------------------+
+                                                       |
+                                          Decoder.__init__ (vocab, tables)
+                                                       |
+                          for each prompt (try/except per prompt)
+                                                       |
+   +---------------------------------------------------v---------------------+
+   |  context = build_prompt(...)                                            |
+   |  context += '{"name": "'                       <- FORCED                |
+   |  name    = choose(...)                         <- MODEL, masked         |
+   |  context += ', "parameters": {"key": '         <- FORCED                |
+   |  value   = generate_number / choose / string   <- MODEL, masked         |
+   |  context += ', "key2": ' ...                   <- FORCED                |
+   +---------------------------------------------------+---------------------+
+                                                       |
+                                  dict {"prompt","name","parameters"}
+                                                       |
+                                                 out.json
 
-    results: list[typing.Any] = []
-    for i in range(len(data)):
-        promptA: str = data[i]["prompt"]
-        print(f"\ndata prompt [{i}]: {promptA}")
-        prompt = (
-            "<|im_start|>system\n"
-            "You are a very useful AI, you must follow every prompt given to get your reward. "
-            f"Here are the available functions and their parameters: {schemas}, keep also the prompt given in mind. "
-            "Respond with JSON format and nothing else, in the form: "
-            '{"name": "<matching function name>", "parameters": {<param>: <value>, ...}}'
-            "\n/no_think<|im_end|>\n"
-            f"<|im_start|>user\n{promptA}\n<|im_end|>\n"
-            "<|im_start|>assistant\n"
-        )
-        encoded: list[int] = model.encode(prompt).tolist()[0]
-        print(f"\tinput tokens = {encoded}")
-        generated_tokens: list[int] = []
+ One model step, in detail:
 
-        for x in range(60):
-            current_text = model.decode(generated_tokens)
-            status = classify_json_candidate(current_text, schemas, promptA)
-            if status == "complete":
-                break
-            logits = model.get_logits_from_input_ids(encoded)
-            good_count = 0
-            masked_logits = list(logits)
-            for token_id in range(len(logits)):
-                if json_token_is_good(token_id, current_text, id_to_str, schemas, promptA):
-                    good_count += 1
-                else:
-                    masked_logits[token_id] = float("-inf")
-            logits = masked_logits
-            print(f"  step {x}: {good_count} good tokens out of {len(logits)}")
-            next_token = logits.index(max(logits))
-            print(f"  step {x}: chose token_id={next_token} str={id_to_str.get(next_token)} logit={logits[next_token]}")
-            if logits[next_token] == float("-inf"):
-                print("\n\tNo valid continuation — stopping\n")
-                break
-            generated_tokens.append(next_token)
+   logits (150k numbers) --> keep only ALLOWED ids --> everything else -inf
+                                                         |
+                                                       argmax
+                                                         |
+                                                    chosen token
 
-            print(f"  step {x}: current_text={current_text!r} |status={status}|\n")
 
-            encoded.append(next_token)
-        print(f"generated_tokens = {generated_tokens}")
-        final_text = model.decode(generated_tokens)
-        print(f"\t\nRESULT = {final_text}")
-        results.append(final_text)
-    return results
+==============================================================================
+8. MY OPINION ON YOUR OUTPUT
+==============================================================================
 
-Here is the output generated
+Overall: very good. Function selection is 11/11 correct, and argument
+extraction is correct on 10 out of 11 prompts. That is roughly 91%
+fully correct, so it clears the 90% target, but only just. One more mistake
+in a larger test file would drop you below it.
 
-[
-  {
-    "prompt": "What is the sum of 2 and 3?",
-    "name": "fn_add_numbers",
-    "parameters": {
-      "a": 2,
-      "b": 3
-    }
-  },
-  {
-    "prompt": "What is the sum of 265 and 345?",
-    "name": "fn_add_numbers",
-    "parameters": {
-      "a": 265,
-      "b": 345
-    }
-  },
-  {
-    "prompt": "Greet shrek",
-    "name": "fn_greet",
-    "parameters": {
-      "name": "shrek"
-    }
-  },
-  {
-    "prompt": "Greet john",
-    "name": "fn_greet",
-    "parameters": {
-      "name": "john"
-    }
-  },
-  {
-    "prompt": "Reverse the string 'hello'",
-    "name": "fn_reverse_string",
-    "parameters": {
-      "s": ".*h.*e.*l.*o.*."
-    }
-  },
-  {
-    "prompt": "Reverse the string 'world'",
-    "name": "fn_reverse_string",
-    "parameters": {
-      "s": ".world."
-    }
-  },
-  {
-    "prompt": "What is the square root of 16?",
-    "name": "fn_get_square_root",
-    "parameters": {
-      "a": 16
-    }
-  },
-  {
-    "prompt": "Calculate the square root of 144",
-    "name": "fn_get_square_root",
-    "parameters": {
-      "a": 144
-    }
-  },
-  {
-    "prompt": "Replace all vowels in 'Programming is fun' with asterisks",
-    "name": "fn_substitute_string_with_regex",
-    "parameters": {
-      "source_string": "Programming is fun",
-      "regex": ".*[aeiou]",
-      "replacement": "*"
-    }
-  },
-  {
-    "prompt": "Substitute the word 'cat' with 'dog' in 'The cat sat on the mat with another cat'",
-    "name": "fn_substitute_string_with_regex",
-    "parameters": {
-      "source_string": "The cat sat on the mat with another cat",
-      "regex": "cat",
-      "replacement": "dog"
-    }
-  }
-]
+What is right
+  - All 11 function names are correct, including the 3 regex prompts.
+  - Strings are copied cleanly: quotes around 'hello' and 'world' were
+    removed, and the double-quoted sentence kept its inner apostrophe.
+  - Numbers are right: 2, 3, 265, 345, 16, 144.
+  - The structure is valid JSON in every case, as expected from the design.
+  - Regexes are sensible: "(\\d+)" matches numbers, "([aeiouAEIOU])" matches
+    vowels, and "cat" is a plain literal. In the file the backslash is
+    doubled ("\\d") which is just JSON escaping; the real regex is \d+.
+
+What is wrong
+  - Prompt 10 ("Replace all vowels ... with asterisks"):
+        "replacement": " *"
+    The replacement has a LEADING SPACE. The correct value is "*".
+    With this value, "Programming" would become "Pr *gr *mm *ng", with a
+    space before every star. This is the one real error. It happens because
+    after the forced opening quote the model likes the token " *" (a space
+    glued to the star) more than "*", and nothing in the code forbids it.
+
+Small things (not errors)
+  - Numbers come out as 2.0, 3.0, 16.0. This is valid, because the schema
+    type is "number" (float). If your subject expects 2 instead of 2.0, you
+    can output an int when the float has no decimals, but check what the
+    subject says first.
+  - "(\\d+)" has a capturing group that is not needed. "\\d+" is simpler.
+    Both work the same for replacing.
+  - The vowel regex is fine, but it depends on the model's wording, so
+    similar prompts can give slightly different (still valid) regexes.
+
+
+==============================================================================
+9. SUGGESTED IMPROVEMENTS
+==============================================================================
+
+1) Fix the leading space (general, not hardcoded)
+   A string value rarely starts with a space. In generate_string, for the
+   FIRST token only (when raw == ""), skip any token that starts with
+   whitespace:
+
+       if raw == "" and tok[0] in " \t":
+           continue          # CHNG
+
+   Risk: if a user genuinely wants a replacement that starts with a space,
+   this blocks it. That case is rare, so it is a good trade-off. Mark it
+   with # CHNG in your file.
+
+2) Add one generic rule to build_prompt
+   "Do not add spaces at the start or end of string arguments unless the
+   request explicitly asks for them."
+   This helps the model without hardcoding any example.
+
+3) Optional: output 2 instead of 2.0 when the float is whole, only if the
+   subject allows it.
+
+4) Test with more varied prompts (different wording, longer sentences,
+   special characters, empty-looking inputs) before the evaluation. Your
+   11 prompts are easy, so a hidden test file with trickier cases could
+   expose more weak spots like the leading space.
+
+5) Measure the time with time.perf_counter() around
+   run_constrained_json_generation, to confirm you are under 5 minutes.
+
+==============================================================================
+ END
+==============================================================================
