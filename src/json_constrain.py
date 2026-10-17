@@ -1,42 +1,38 @@
 import json
-import re  # CHNG
-import sys  # CHNG
+import re
+import sys
 import typing
-
-import numpy as np  # CHNG
-
+import numpy as np
+# from pydantic import BaseModel, ConfigDict
 import llm_s.llm_sdk
 
 
 DEBUG = False
-MAX_STRING_TOKENS = 60  # CHNG: hard cap per string value
-MAX_NUMBER_CHARS = 20  # CHNG: hard cap per number value
+MAX_STRING_TOKENS = 60
+MAX_NUMBER_CHARS = 20
 
-INT_TYPES = {"int", "integer"}  # CHNG
-NUM_TYPES = {"float", "number"}  # CHNG
-BOOL_TYPES = {"bool", "boolean"}  # CHNG
+INT_TYPES = {"int", "integer"}
+NUM_TYPES = {"float", "number"}
+BOOL_TYPES = {"bool", "boolean"}
 
-# CHNG: string body = any char except " and control chars, or "\" + any char.
-STR_BODY = re.compile(r'(?:[^"\\\x00-\x1f]|\\.)*\\?')  # may end on a lone "\"
-STR_DONE = re.compile(r'(?:[^"\\\x00-\x1f]|\\.)*')  # complete body
-# CHNG: what a number may look like while written / when complete
+STR_BODY = re.compile(r'(?:[^"\\\x00-\x1f]|\\.)*\\?')
+STR_DONE = re.compile(r'(?:[^"\\\x00-\x1f]|\\.)*')
 NUM_PREFIX = re.compile(r"-?(?:\d+(?:\.\d*)?)?")
 INT_PREFIX = re.compile(r"-?\d*")
 NUM_FULL = re.compile(r"-?\d+(?:\.\d+)?")
 INT_FULL = re.compile(r"-?\d+")
-# CHNG: only real JSON escapes are decoded; "\d", "\b" stay literal (regex!)
 ESC = re.compile(r'\\(u[0-9a-fA-F]{4}|["\\/nrt])')
 SIMPLE_ESC = {'"': '"', "\\": "\\", "/": "/", "n": "\n", "r": "\r", "t": "\t"}
 
 
-def unescape(raw: str) -> str:  # CHNG
+def unescape(raw: str) -> str:
     def sub(m: re.Match) -> str:
         g = m.group(1)
         return chr(int(g[1:], 16)) if g[0] == "u" else SIMPLE_ESC[g]
     return ESC.sub(sub, raw)
 
 
-def byte_decoder() -> dict[str, int]:  # CHNG: Qwen byte-level map
+def byte_decoder() -> dict[str, int]:
     bs = (list(range(ord("!"), ord("~") + 1))
           + list(range(ord("¡"), ord("¬") + 1))
           + list(range(ord("®"), ord("ÿ") + 1)))
@@ -50,7 +46,7 @@ def byte_decoder() -> dict[str, int]:  # CHNG: Qwen byte-level map
     return {chr(c): b for b, c in zip(bs, cs)}
 
 
-def load_vocabulary(model) -> list[typing.Optional[str]]:  # CHNG
+def load_vocabulary(model) -> list[typing.Optional[str]]:
     """tokens[id] = real text of the token, None if it can't be text."""
     with open(model.get_path_to_vocab_file(), "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -60,7 +56,7 @@ def load_vocabulary(model) -> list[typing.Optional[str]]:  # CHNG
         try:
             tokens[tid] = bytes(dec[c] for c in tok).decode("utf-8")
         except (KeyError, UnicodeDecodeError):
-            pass  # partial UTF-8 byte token: never used
+            pass
     return tokens
 
 
@@ -76,12 +72,12 @@ def build_prompt(user_prompt: str, schemas: list[dict]) -> str:
         f"Available functions:\n{funcs}\n\n"
         "Rules:\n"
         "- Pick the function whose description best matches the request.\n"
+        "- Do not add any leading space or trailing spaces unless asked.\n"
         "- Copy string arguments exactly from the request, without the "
         "surrounding quotes.\n"
         "- Numbers are plain digits.\n"
-        "- Do not add leading or trailing spaces unless asked"
         "- For regex parameters, write a regex that matches what the user "
-        "describes.\n"  # CHNG
+        "describes.\n"
         "Respond with JSON only: "
         '{"name": "<function name>", "parameters": {<param>: <value>, ...}}'
         "\n/no_think<|im_end|>\n"
@@ -90,14 +86,22 @@ def build_prompt(user_prompt: str, schemas: list[dict]) -> str:
     )
 
 
-class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
-    def __init__(self, model, schemas: list[dict]) -> None:
+# class DecoderConfig(BaseModel):
+#     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+#     model: llm_s.llm_sdk.Small_LLM_Model
+#     schemas: list[dict]
+
+
+class Decoder:
+    def __init__(self, model: llm_s.llm_sdk.Small_LLM_Model, schemas: list[dict]) -> None:
+        # config = DecoderConfig(model=model, schemas=schemas)
         self.model = model
         self.schemas = schemas
         self.tokens = load_vocabulary(model)
-        self.by_text: dict[str, list[int]] = {}  # text -> ids
-        self.number_ids: list[int] = []  # only digits . -
-        self.end_ids: list[int] = []  # start with , or }
+        self.by_text: dict[str, list[int]] = {}
+        self.number_ids: list[int] = []
+        self.end_ids: list[int] = []
         for i, t in enumerate(self.tokens):
             if not t:
                 continue
@@ -136,7 +140,7 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
             if not left:
                 raise ValueError("no option matches")
             if len(left) == 1:
-                ids.extend(self.encode(left[0][len(text):]))  # no model call
+                ids.extend(self.encode(left[0][len(text):]))
                 return left[0]
             allowed: list[int] = []
             for o in left:
@@ -145,7 +149,7 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
                     allowed.extend(self.by_text.get(rest[:n], []))
             tid = self.pick(ids, allowed)
             ids.append(tid)
-            text += self.tokens[tid]  # type: ignore[operator]
+            text += self.tokens[tid]
 
     def generate_string(self, ids: list[int]) -> str:
         """Opening quote is already in ids. Returns the decoded value.
@@ -155,21 +159,22 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
         raw = ""
         for _ in range(MAX_STRING_TOKENS):
             lg = self.logits(ids)
-            for tid in np.argsort(-lg):  # best logit first, stop at 1st valid
+            for tid in np.argsort(-lg):
                 tid = int(tid)
                 tok = self.tokens[tid] if tid < len(self.tokens) else None
                 if not tok:
                     continue
-                if STR_BODY.fullmatch(raw + tok):  # string goes on
+                if STR_BODY.fullmatch(raw + tok):
                     raw += tok
+                    print(f"raw {raw!r}")
                     ids.append(tid)
                     break
-                q = tok.find('"')  # token holds the closing quote
+                q = tok.find('"')
                 if q != -1 and STR_DONE.fullmatch(raw + tok[:q]):
-                    return unescape(raw + tok[:q])
+                    return unescape(raw + tok[:q]).lstrip()
             else:
-                break  # nothing valid at all
-        return unescape(raw)
+                break
+        return unescape(raw).lstrip()
 
     def generate_number(self, ids: list[int], integer: bool) -> float:
         prefix = INT_PREFIX if integer else NUM_PREFIX
@@ -178,14 +183,14 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
         while len(text) < MAX_NUMBER_CHARS:
             allowed = [
                 i for i in self.number_ids
-                if prefix.fullmatch(text + self.tokens[i])  # type: ignore
+                if prefix.fullmatch(text + self.tokens[i])
             ]
-            if full.fullmatch(text):  # complete: model may now end it
+            if full.fullmatch(text):
                 allowed += self.end_ids
             tid = self.pick(ids, allowed)
             if tid in self.end_set:
-                break  # token dropped, caller forces ", " or "}}"
-            text += self.tokens[tid]  # type: ignore[operator]
+                break
+            text += self.tokens[tid]
             ids.append(tid)
         text = text.rstrip(".")
         if text in ("", "-"):
@@ -196,18 +201,17 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
         ids = self.encode(build_prompt(request, schemas))
         ids += self.encode('{"name": "')
         names = list(dict.fromkeys(s["name"] for s in schemas))
-        # closing quote stops "fn_add" being a prefix of "fn_add_numbers"
         name = self.choose(ids, [n + '"' for n in names])[:-1]
         schema = next(s for s in schemas if s["name"] == name)
 
         params: dict[str, typing.Any] = {}
         forced = ', "parameters": {'
-        for idx, (key, spec) in enumerate(schema.get("parameters", {}).items()):
+        for idx, (key, val) in enumerate(schema.get("parameters", {}).items()):
             if idx > 0:
                 forced += ", "
             forced += f'"{key}": '
-            typ = spec.get("type")
-            enum = spec.get("enum")
+            typ = val.get("type")
+            enum = val.get("enum")
             if typ in INT_TYPES or typ in NUM_TYPES:
                 ids += self.encode(forced)
                 params[key] = self.generate_number(ids, typ in INT_TYPES)
@@ -220,23 +224,24 @@ class Decoder:  # CHNG: whole class is new, replaces the parser + pick_token
                 ids += self.encode(forced + '"')
                 params[key] = self.choose(ids, [v + '"' for v in enum])[:-1]
                 forced = ""
-            else:  # string (and unknown types)
+            else:
                 ids += self.encode(forced + '"')
                 params[key] = self.generate_string(ids)
-                forced = '"'  # force the closing quote
+                print(f"params[key] {params[key]!r}")
+                forced = '"'
         return {"prompt": request, "name": name, "parameters": params}
 
 
-def run_constrained_json_generation(  # CHNG: vocab_size arg removed
+def run_constrained_json_generation(
     data: list[dict],
     model: llm_s.llm_sdk.Small_LLM_Model,
     schemas: list[dict],
 ) -> list[typing.Optional[dict]]:
-    decoder = Decoder(model, schemas)  # vocab built once
+    decoder = Decoder(model, schemas)
     results: list[typing.Optional[dict]] = []
     for i, entry in enumerate(data, start=1):
         print(f"[{i}] {entry['prompt']}")
-        try:  # CHNG: one bad prompt must not stop the run
+        try:
             call = decoder.decode_call(entry["prompt"], schemas)
         except Exception as exc:
             print(f"  error: {exc}", file=sys.stderr)

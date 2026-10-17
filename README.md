@@ -115,20 +115,8 @@ Output file (`out.json`):
     "prompt": "What is the square root of 16?",
     "name": "fn_get_square_root",
     "parameters": { "a": 16.0 }
-  },
-  {
-    "prompt": "Replace all numbers in \"Hello 34 I'm 233 years old\" with NUMBERS",
-    "name": "fn_substitute_string_with_regex",
-    "parameters": {
-      "source_string": "Hello 34 I'm 233 years old",
-      "regex": "(\\d+)",
-      "replacement": "NUMBERS"
-    }
   }
-]
 ```
-
-(`"\\d+"` is JSON escaping; the real regex is `\d+`.)
 
 ## Algorithm explanation
 
