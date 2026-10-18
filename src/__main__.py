@@ -1,7 +1,7 @@
 import argparse
 import json
 import sys
-import llm_s.llm_sdk
+from llm_sdk.llm_sdk import Small_LLM_Model
 from typing import Any
 from pathlib import Path
 from src.json_constrain import run_constrained_json_generation
@@ -10,7 +10,7 @@ VALID_TYPES = {"str", "string", "int", "integer",
                "float", "number", "bool", "boolean"}
 
 
-def load_json(path: str, what: str):
+def load_json(path: str, what: str) -> Any:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -26,7 +26,7 @@ def load_json(path: str, what: str):
         sys.exit(f"Error: {what} file is not valid UTF-8: {path}")
 
 
-def validate_definitions(raw: Any) -> list[dict]:
+def validate_definitions(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         sys.exit("Error: function definitions must be a JSON list.")
     good, seen = [], set()
@@ -54,7 +54,7 @@ def validate_definitions(raw: Any) -> list[dict]:
     return good
 
 
-def validate_prompts(raw) -> list[dict]:
+def validate_prompts(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         sys.exit("Error: input file must be a JSON list of {\"prompt\": ...}.")
     good = []
@@ -68,7 +68,7 @@ def validate_prompts(raw) -> list[dict]:
     return good
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m src")
     p.add_argument("--functions_definition",
                    default="data/input/functions_definition.json")
@@ -86,7 +86,7 @@ def main() -> None:
     if not data:
         sys.exit("Error: no valid prompts to process.")
     try:
-        model = llm_s.llm_sdk.Small_LLM_Model()
+        model = Small_LLM_Model()
     except Exception as e:
         sys.exit(f"Error: could not load model: {e}")
     calls = run_constrained_json_generation(data, model, schemas)

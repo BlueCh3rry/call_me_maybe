@@ -3,8 +3,9 @@ import re
 import sys
 import typing
 import numpy as np
+from typing import Any
+from llm_sdk.llm_sdk import Small_LLM_Model as SLM
 # from pydantic import BaseModel, ConfigDict
-import llm_s.llm_sdk
 
 
 DEBUG = False
@@ -26,7 +27,7 @@ SIMPLE_ESC = {'"': '"', "\\": "\\", "/": "/", "n": "\n", "r": "\r", "t": "\t"}
 
 
 def unescape(raw: str) -> str:
-    def sub(m: re.Match) -> str:
+    def sub(m: re.Match[str]) -> str:
         g = m.group(1)
         return chr(int(g[1:], 16)) if g[0] == "u" else SIMPLE_ESC[g]
     return ESC.sub(sub, raw)
@@ -46,7 +47,7 @@ def byte_decoder() -> dict[str, int]:
     return {chr(c): b for b, c in zip(bs, cs)}
 
 
-def load_vocabulary(model) -> list[typing.Optional[str]]:
+def load_vocabulary(model: SLM) -> list[typing.Optional[str]]:
     """tokens[id] = real text of the token, None if it can't be text."""
     with open(model.get_path_to_vocab_file(), "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -60,7 +61,7 @@ def load_vocabulary(model) -> list[typing.Optional[str]]:
     return tokens
 
 
-def build_prompt(user_prompt: str, schemas: list[dict]) -> str:
+def build_prompt(user_prompt: str, schemas: list[dict[str, Any]]) -> str:
     funcs = "\n".join(
         f"- {s['name']}: {s.get('description', '')} "
         f"Parameters: {json.dumps(s.get('parameters', {}))}"
@@ -94,7 +95,7 @@ def build_prompt(user_prompt: str, schemas: list[dict]) -> str:
 
 
 class Decoder:
-    def __init__(self, model: llm_s.llm_sdk.Small_LLM_Model, schemas: list[dict]) -> None:
+    def __init__(self, model: SLM, schemas: list[dict[str, Any]]) -> None:
         # config = DecoderConfig(model=model, schemas=schemas)
         self.model = model
         self.schemas = schemas
@@ -117,10 +118,9 @@ class Decoder:
             return []
         return [int(i) for i in self.model.encode(text)[0].tolist()]
 
-    def logits(self, ids: list[int]) -> np.ndarray:
+    def logits(self, ids: list[int]) -> np.typing.NDArray[np.float64]:
         return np.asarray(
-            self.model.get_logits_from_input_ids(ids), dtype=np.float64
-        )
+            self.model.get_logits_from_input_ids(ids), dtype=np.float64)
 
     def pick(self, ids: list[int], allowed: list[int]) -> int:
         """Mask every token not in `allowed` with -inf, then argmax."""
@@ -197,7 +197,8 @@ class Decoder:
             text = "0"
         return int(text) if integer else float(text)
 
-    def decode_call(self, request: str, schemas: list[dict]) -> dict:
+    def decode_call(self, request: str,
+                    schemas: list[dict[str, Any]]) -> dict[str, Any]:
         ids = self.encode(build_prompt(request, schemas))
         ids += self.encode('{"name": "')
         names = list(dict.fromkeys(s["name"] for s in schemas))
@@ -233,12 +234,12 @@ class Decoder:
 
 
 def run_constrained_json_generation(
-    data: list[dict],
-    model: llm_s.llm_sdk.Small_LLM_Model,
-    schemas: list[dict],
-) -> list[typing.Optional[dict]]:
+    data: list[dict[str, Any]],
+    model: SLM,
+    schemas: list[dict[str, Any]],
+) -> list[typing.Optional[dict[str, Any]]]:
     decoder = Decoder(model, schemas)
-    results: list[typing.Optional[dict]] = []
+    results: list[typing.Optional[dict[str, Any]]] = []
     for i, entry in enumerate(data, start=1):
         print(f"[{i}] {entry['prompt']}")
         try:
