@@ -134,7 +134,7 @@ class Decoder:
 
     def choose(self, ids: list[int], options: list[str]) -> str:
         """Model picks one option. Auto-completes when only one is left."""
-        text = ""
+        text: str = ""
         while True:
             left = [o for o in options if o.startswith(text)]
             if not left:
@@ -149,7 +149,7 @@ class Decoder:
                     allowed.extend(self.by_text.get(rest[:n], []))
             tid = self.pick(ids, allowed)
             ids.append(tid)
-            text += self.tokens[tid]
+            text += self.tokens[tid] or ""
 
     def generate_string(self, ids: list[int]) -> str:
         """Opening quote is already in ids. Returns the decoded value.
@@ -183,14 +183,14 @@ class Decoder:
         while len(text) < MAX_NUMBER_CHARS:
             allowed = [
                 i for i in self.number_ids
-                if prefix.fullmatch(text + self.tokens[i])
+                if prefix.fullmatch(text + (self.tokens[i] or ""))
             ]
             if full.fullmatch(text):
                 allowed += self.end_ids
             tid = self.pick(ids, allowed)
             if tid in self.end_set:
                 break
-            text += self.tokens[tid]
+            text += self.tokens[tid] or ""
             ids.append(tid)
         text = text.rstrip(".")
         if text in ("", "-"):
