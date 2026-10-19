@@ -1,17 +1,20 @@
 [project]
-name = "llm-sdk"
+name = "call-me-maybe"
 version = "0.1.0"
-description = "LLM SDK for local model inference"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "BlueCh3rry", email = "fauchierluck@gmail.com" }
+]
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.0.0",
-    "transformers>=4.40.0",
-    "huggingface-hub>=0.20.0",
+    "numpy>=2.2.6",
+    "pydantic>=2.14.1",
+    "torch>=2.14.1",
+    "transformers>=5.20.1",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["llm_sdk"]
+[tool.uv.workspace]
+members = [
+    "llm_sdk",
+]

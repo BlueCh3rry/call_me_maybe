@@ -6,7 +6,7 @@ export UV_CACHE_DIR := $(CACHE_DIR)/uv
 export UV_LINK_MODE := copy
 export HF_HOME := $(CACHE_DIR)/huggingface
 
-all: ${NAME}
+all: install run
 
 install:
 	uv sync
@@ -33,4 +33,4 @@ lint-strict:
 	uv run flake8 src
 	uv run mypy src --strict
 
-.PHONY: install run debug clean lint lint-strict
+.PHONY: all install run debug clean lint lint-strict

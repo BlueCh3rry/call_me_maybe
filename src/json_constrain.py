@@ -5,7 +5,7 @@ import typing
 import numpy as np
 from typing import Any
 from llm_sdk.llm_sdk import Small_LLM_Model as SLM
-# from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 
 DEBUG = False
@@ -87,22 +87,19 @@ def build_prompt(user_prompt: str, schemas: list[dict[str, Any]]) -> str:
     )
 
 
-# class DecoderConfig(BaseModel):
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
+class Decoder(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-#     model: llm_s.llm_sdk.Small_LLM_Model
-#     schemas: list[dict]
+    model: SLM
+    schemas: list[dict[str, Any]]
+    tokens: list[str | None] = []
+    by_text: dict[str, list[int]] = {}
+    number_ids: list[int] = []
+    end_ids: list[int] = []
+    end_set: set[int] = set()
 
-
-class Decoder:
-    def __init__(self, model: SLM, schemas: list[dict[str, Any]]) -> None:
-        # config = DecoderConfig(model=model, schemas=schemas)
-        self.model = model
-        self.schemas = schemas
-        self.tokens = load_vocabulary(model)
-        self.by_text: dict[str, list[int]] = {}
-        self.number_ids: list[int] = []
-        self.end_ids: list[int] = []
+    def model_post_init(self, __context: Any) -> None:
+        self.tokens = load_vocabulary(self.model)
         for i, t in enumerate(self.tokens):
             if not t:
                 continue
@@ -166,7 +163,6 @@ class Decoder:
                     continue
                 if STR_BODY.fullmatch(raw + tok):
                     raw += tok
-                    print(f"raw {raw!r}")
                     ids.append(tid)
                     break
                 q = tok.find('"')
@@ -228,7 +224,6 @@ class Decoder:
             else:
                 ids += self.encode(forced + '"')
                 params[key] = self.generate_string(ids)
-                print(f"params[key] {params[key]!r}")
                 forced = '"'
         return {"prompt": request, "name": name, "parameters": params}
 
@@ -238,7 +233,7 @@ def run_constrained_json_generation(
     model: SLM,
     schemas: list[dict[str, Any]],
 ) -> list[typing.Optional[dict[str, Any]]]:
-    decoder = Decoder(model, schemas)
+    decoder = Decoder(model=model, schemas=schemas)
     results: list[typing.Optional[dict[str, Any]]] = []
     for i, entry in enumerate(data, start=1):
         print(f"[{i}] {entry['prompt']}")

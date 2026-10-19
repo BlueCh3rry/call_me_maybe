@@ -34,11 +34,11 @@ def validate_definitions(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(fn, dict) or not isinstance(fn.get("name"), str):
             print(f"Warning: definition #{idx} (needs a string 'name').",
                   file=sys.stderr)
-            continue
+            sys.exit(1)
         if fn["name"] in seen:
             print(f"Warning: duplicate definition '{fn['name']}' skipped.",
                   file=sys.stderr)
-            continue
+            sys.exit(1)
         params = fn.get("parameters", {})
         if not isinstance(params, dict) or not all(
             isinstance(p, dict) and p.get("type") in VALID_TYPES
@@ -46,7 +46,7 @@ def validate_definitions(raw: Any) -> list[dict[str, Any]]:
         ):
             print(f"Warning: definition '{fn['name']}' skipped "
                   "(bad 'parameters').", file=sys.stderr)
-            continue
+            sys.exit(1)
         seen.add(fn["name"])
         good.append({**fn, "parameters": params})
     if not good:
@@ -65,6 +65,7 @@ def validate_prompts(raw: Any) -> list[dict[str, Any]]:
         else:
             print(f"Warning: prompt #{idx} (needs non-empty 'prompt').",
                   file=sys.stderr)
+            sys.exit(1)
     return good
 
 
