@@ -16,6 +16,7 @@ structured call in json format
 - `uv`
 - The provided `llm_sdk` package
 - `numpy`
+- `pydantic`
 
 ### Installation
 
@@ -61,7 +62,9 @@ The generation of one call works in these steps:
 2. Function name: `choose()` lets the model pick among the valid
    function names. Only tokens that continue one of the remaining names are
    allowed. When a single candidate is left, the rest is auto-completed
-   without asking the model.
+   without asking the model. A special option, `fn_none`, is listed with the
+   other functions. If the model picks it, the request matches no function
+   and the prompt is skipped.
 3. Parameters: the keys, quotes, commas and braces are taken from the
    function's schema and forced into the context. The model only produces the
    values, one by one, according to each type:
@@ -76,7 +79,8 @@ The generation of one call works in these steps:
      accepted. A token containing the closing quote ends the string. The
      value is then unescaped (`\n`, `\uXXXX`, ...).
 4. Result: the program assembles `{"prompt", "name", "parameters"}` and
-   writes all results to the output file.
+   writes all results to the output file. Prompts that matched no function
+   are not written, so the output can contain fewer entries than the input.
 
 ### Design decisions
 
@@ -91,10 +95,19 @@ The generation of one call works in these steps:
   subset of the vocabulary.
 - Safety limits: strings are capped at 60 tokens and numbers at 20
   characters, so generation always terminates.
-- Robust input handling: missing, unreadable or invalid files give a clear
-  error message. Invalid or duplicate function definitions and invalid prompts
-  are skipped with a warning. If one prompt fails, the others are still
-  processed.
+- Pydantic validation: the function definitions and the prompts are
+  validated with pydantic models that reject unknown keys, so a misspelled
+  key (`"typ"`, `"descripton"`) is reported. Empty or blank names,
+  descriptions and prompts are rejected, as are parameter types the decoder
+  does not handle (only `string`, `integer`, `number`, `boolean` and their
+  aliases), non-string enums, and function or parameter names that are not
+  valid identifiers. `Decoder` is itself a pydantic model.
+- No-match handling: the model can answer `fn_none` when the request is
+  unrelated to every function. The model makes this choice, not a heuristic.
+- Robust input handling: missing, unreadable or invalid files, invalid or
+  duplicate function definitions and invalid prompts stop the program with a
+  clear error message that gives the location of the problem. If one prompt
+  fails during generation, the others are still processed.
 
 ### Performance analysis
 
@@ -122,6 +135,11 @@ The generation of one call works in these steps:
   `\`), which the string regex explicitly allows.
 - Unwanted spaces: the model tends to add a leading space at the start of
   a string even though the prompt asks it not to.
+- Prompts with no matching function: the first attempt used a plain `none`
+  option, and the model chose it for every prompt, because the first token
+  of `none` differs from the `fn_` prefix shared by the real functions.
+  Naming the option `fn_none` and listing it with the other functions fixed
+  it.
 
 ### Testing strategy
 
@@ -129,10 +147,11 @@ The generation of one call works in these steps:
 - Check that the output file is valid JSON and every call matches its schema
   (right function name, right parameter names and types).
 - Edge cases: missing file, directory instead of file, invalid JSON, empty
-  prompt, duplicate function names, unknown parameter types, and an output
-  folder that does not exist.
+  prompt, duplicate function names, unknown parameter types, misspelled keys,
+  enum on a non-string parameter, and an output folder that does not exist.
 - Prompts with special characters (quotes, backslashes, accents) to test
   string escaping, and negative or decimal numbers to test number generation.
+- A prompt unrelated to every function, to check that it is skipped.
 
 ### Example usage
 
@@ -143,6 +162,8 @@ uv run python -m src
 Console output while running:
 
 ```
+[1] the weather in 3 days?
+  no matching function, skipped
 [3] Greet shrek
  res = fn_greet {'name': 'shrek'}
 ```
@@ -161,9 +182,10 @@ Output file:
 
 ## Resources
 
-- Python `argparse`, `re`, `uv` documentations
+- Python `argparse`, `re`, `uv` and `pydantic` documentations
 - geeksforgeeks
 - AI assistant was used during development, for: \
 Identifying that scanning the full vocabulary with a JSON parse at every step was the cause of the slow run. \
 Helping restructure the decoder. \
-Helping write and explain the string and number regexes.
+Helping to write regexes and linked functions. \
+Helping design the `fn_none` option for unmatched prompts.

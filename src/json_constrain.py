@@ -8,7 +8,6 @@ from llm_sdk.llm_sdk import Small_LLM_Model as SLM
 from pydantic import BaseModel, ConfigDict
 
 
-DEBUG = False
 MAX_STRING_TOKENS = 60
 MAX_NUMBER_CHARS = 20
 
@@ -67,11 +66,15 @@ def build_prompt(user_prompt: str, schemas: list[dict[str, Any]]) -> str:
         f"Parameters: {json.dumps(s.get('parameters', {}))}"
         for s in schemas
     )
+    funcs += (f"\n- {'fn_none'}: Use ONLY if the request is unrelated to "
+              f"every function above. Parameters: {{}}")
     return (
         "<|im_start|>system\n"
         "You convert a user request into a single function call.\n"
         f"Available functions:\n{funcs}\n\n"
         "Rules:\n"
+        "- If no function fits the request, use the name \"none\" with empty "
+        "parameters.\n"
         "- Pick the function whose description best matches the request.\n"
         "- Do not add any leading space or trailing spaces unless asked.\n"
         "- Copy string arguments exactly from the request, without the "
@@ -198,7 +201,11 @@ class Decoder(BaseModel):
         ids = self.encode(build_prompt(request, schemas))
         ids += self.encode('{"name": "')
         names = list(dict.fromkeys(s["name"] for s in schemas))
-        name = self.choose(ids, [n + '"' for n in names])[:-1]
+        name = self.choose(ids, [n + '"' for n in names + ["fn_none"]])[:-1]
+        if name == "fn_none":
+            return None
+        present = {float(n) for n in NUM_FULL.findall(request)}
+        remaining = [float(n) for n in NUM_FULL.findall(request)]
         schema = next(s for s in schemas if s["name"] == name)
 
         params: dict[str, typing.Any] = {}
@@ -211,7 +218,12 @@ class Decoder(BaseModel):
             enum = val.get("enum")
             if typ in INT_TYPES or typ in NUM_TYPES:
                 ids += self.encode(forced)
-                params[key] = self.generate_number(ids, typ in INT_TYPES)
+                value = self.generate_number(ids, typ in INT_TYPES)
+                if float(value) not in present:
+                    raise ValueError(
+                        f"no value for '{key}', skipped")
+                remaining.remove(float(value))
+                params[key] = value
                 forced = ""
             elif typ in BOOL_TYPES:
                 ids += self.encode(forced)
@@ -239,6 +251,10 @@ def run_constrained_json_generation(
         print(f"[{i}] {entry['prompt']}")
         try:
             call = decoder.decode_call(entry["prompt"], schemas)
+            if call is None:
+                print("  no matching function, skipped", file=sys.stderr)
+                results.append(None)
+                continue
         except Exception as exc:
             print(f"  error: {exc}", file=sys.stderr)
             results.append(None)

@@ -1,72 +1,94 @@
 import argparse
 import json
 import sys
-from llm_sdk.llm_sdk import Small_LLM_Model
-from typing import Any
 from pathlib import Path
+from typing import Annotated, Any, Literal, NoReturn
+from pydantic import (BaseModel, ConfigDict, Field, TypeAdapter,
+                      ValidationError, model_validator)
+from llm_sdk.llm_sdk import Small_LLM_Model
 from src.json_constrain import run_constrained_json_generation
 
-VALID_TYPES = {"str", "string", "int", "integer",
-               "float", "number", "bool", "boolean"}
+Type = Literal["str", "string", "int", "integer",
+               "float", "number", "bool", "boolean"]
+Ident = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+NonBlank = Annotated[str, Field(pattern=r"\S")]  # at least one non-space char
+
+
+class Strict(BaseModel):
+    """Base model that rejects unknown (misspelled) keys."""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ParamSpec(Strict):
+    """One parameter of a function definition."""
+    type: Type
+    description: NonBlank | None = None
+    enum: list[str] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def enum_only_on_strings(self) -> "ParamSpec":
+        if self.enum and self.type not in ("str", "string"):
+            raise ValueError("enum is only supported on string parameters")
+        return self
+
+
+class ReturnSpec(Strict):
+    """Return type of a function definition."""
+    type: Type
+
+
+class FunctionDef(Strict):
+    """One entry of functions_definition.json."""
+    name: Ident
+    description: NonBlank
+    parameters: dict[Ident, ParamSpec]
+    returns: ReturnSpec
+
+
+class PromptEntry(BaseModel):
+    """One entry of function_calling_tests.json."""
+    prompt: NonBlank
+
+
+def fail(label: str, exc: ValidationError) -> NoReturn:
+    """Exit with a readable list of validation errors."""
+    lines = [f"Error: invalid {label}:"]
+    for e in exc.errors():
+        where = ".".join(map(str, e["loc"])) or "(root)"
+        lines.append(f"  - {where}: {e['msg']}")
+    sys.exit("\n".join(lines))
 
 
 def load_json(path: str, what: str) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except FileNotFoundError:
-        sys.exit(f"Error: {what} file not found: {path}")
-    except IsADirectoryError:
-        sys.exit(f"Error: {what} path is a directory: {path}")
-    except PermissionError:
-        sys.exit(f"Error: no permission to read {what} file: {path}")
-    except json.JSONDecodeError as e:
-        sys.exit(f"Error: {what} file is not valid JSON ({path}): {e}")
-    except UnicodeDecodeError:
-        sys.exit(f"Error: {what} file is not valid UTF-8: {path}")
+    except OSError as e:
+        sys.exit(f"Error: cannot read {what} file: {e}")
+    except ValueError as e:
+        sys.exit(f"Error: {what} file is invalid ({path}): {e}")
 
 
 def validate_definitions(raw: Any) -> list[dict[str, Any]]:
-    if not isinstance(raw, list):
-        sys.exit("Error: function definitions must be a JSON list.")
-    good, seen = [], set()
-    for idx, fn in enumerate(raw):
-        if not isinstance(fn, dict) or not isinstance(fn.get("name"), str):
-            print(f"Warning: definition #{idx} (needs a string 'name').",
-                  file=sys.stderr)
-            sys.exit(1)
-        if fn["name"] in seen:
-            print(f"Warning: duplicate definition '{fn['name']}' skipped.",
-                  file=sys.stderr)
-            sys.exit(1)
-        params = fn.get("parameters", {})
-        if not isinstance(params, dict) or not all(
-            isinstance(p, dict) and p.get("type") in VALID_TYPES
-            for p in params.values()
-        ):
-            print(f"Warning: definition '{fn['name']}' skipped "
-                  "(bad 'parameters').", file=sys.stderr)
-            sys.exit(1)
-        seen.add(fn["name"])
-        good.append({**fn, "parameters": params})
-    if not good:
-        sys.exit("Error: no usable function definitions.")
-    return good
+    try:
+        fns = TypeAdapter(list[FunctionDef]).validate_python(raw)
+    except ValidationError as e:
+        fail("function definitions", e)
+    if not fns:
+        sys.exit("Error: no function definitions found.")
+    names = [f.name for f in fns]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        sys.exit(f"Error: duplicate function names: {dupes}")
+    return [f.model_dump(exclude_none=True) for f in fns]
 
 
 def validate_prompts(raw: Any) -> list[dict[str, Any]]:
-    if not isinstance(raw, list):
-        sys.exit("Error: input file must be a JSON list of {\"prompt\": ...}.")
-    good = []
-    for idx, entry in enumerate(raw):
-        if (isinstance(entry, dict) and isinstance(entry.get("prompt"), str)
-                and entry["prompt"].strip()):
-            good.append(entry)
-        else:
-            print(f"Warning: prompt #{idx} (needs non-empty 'prompt').",
-                  file=sys.stderr)
-            sys.exit(1)
-    return good
+    try:
+        prompts = TypeAdapter(list[PromptEntry]).validate_python(raw)
+    except ValidationError as e:
+        fail("input prompts", e)
+    return [p.model_dump() for p in prompts]
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,8 +96,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--functions_definition",
                    default="data/input/functions_definition.json")
     p.add_argument("--input", default="data/input/function_calling_tests.json")
-    p.add_argument("--output",
-                   default="data/output/function_calls.json")
+    p.add_argument("--output", default="data/output/function_calls.json")
     return p.parse_args()
 
 
@@ -90,17 +111,16 @@ def main() -> None:
         model = Small_LLM_Model()
     except Exception as e:
         sys.exit(f"Error: could not load model: {e}")
-    calls = run_constrained_json_generation(data, model, schemas)
 
+    calls = run_constrained_json_generation(data, model, schemas)
     results = [c for c in calls if c is not None]
     if len(results) < len(data):
-        print(f"Warning: {len(data) - len(results)} prompt(s) failed.",
+        print(f"Warning: {len(data) - len(results)} prompt(s) skipped.",
               file=sys.stderr)
     try:
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2)
+        out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     except OSError as e:
         sys.exit(f"Error: cannot write output file: {e}")
 

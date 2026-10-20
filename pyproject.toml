@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.14.1",
     "torch>=2.14.1",
     "transformers>=5.20.1",
+    "huggingface-hub>=0.20.0",
 ]
 
 [tool.uv.workspace]
