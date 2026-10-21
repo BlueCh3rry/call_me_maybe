@@ -197,7 +197,7 @@ class Decoder(BaseModel):
         return int(text) if integer else float(text)
 
     def decode_call(self, request: str,
-                    schemas: list[dict[str, Any]]) -> dict[str, Any]:
+                    schemas: list[dict[str, Any]]) -> dict[str, Any] | None:
         ids = self.encode(build_prompt(request, schemas))
         ids += self.encode('{"name": "')
         names = list(dict.fromkeys(s["name"] for s in schemas))

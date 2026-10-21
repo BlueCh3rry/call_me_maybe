@@ -14,9 +14,13 @@ structured call in json format
 
 - Python 3.10+
 - `uv`
-- The provided `llm_sdk` package
 - `numpy`
 - `pydantic`
+
+The provided llm_sdk package
+- `torch`
+- `transformers`
+- `huggingface`
 
 ### Installation
 
@@ -51,36 +55,25 @@ The output folder is created if it does not exist.
 The program uses constrained decoding. At each step the model produces
 logits (a score for every token in its vocabulary). Instead of sampling
 freely, we mask every token that would break the expected JSON structure by
-setting its score to `-inf`, then take the highest remaining token (argmax).
+setting its score to -inf, then take the highest remaining token (argmax).
 The output can therefore never be malformed.
 
 The generation of one call works in these steps:
 
 1. Prompt: a chat-style prompt lists the available functions and the
    rules, followed by the user request. The assistant turn is then started
-   with the forced prefix `{"name": "`.
-2. Function name: `choose()` lets the model pick among the valid
+   with the forced prefix {"name": ".
+2. Function name: choose() lets the model pick among the valid
    function names. Only tokens that continue one of the remaining names are
    allowed. When a single candidate is left, the rest is auto-completed
-   without asking the model. A special option, `fn_none`, is listed with the
-   other functions. If the model picks it, the request matches no function
-   and the prompt is skipped.
+   without asking the model.
 3. Parameters: the keys, quotes, commas and braces are taken from the
    function's schema and forced into the context. The model only produces the
-   values, one by one, according to each type:
-   - number / integer: only tokens made of `0-9`, `.` and `-` that keep
-     the text a valid numeric prefix are allowed (regex). The tokens that
-     start with `,` or `}` become allowed only once the number is complete,
-     which is how the model ends it.
-   - boolean: `choose()` between `true` and `false`.
-   - string enum: `choose()` between the enum values.
-   - string: tokens are tried from the most to the least likely, and the
-     first one that keeps the text a valid JSON string body (regex) is
-     accepted. A token containing the closing quote ends the string. The
-     value is then unescaped (`\n`, `\uXXXX`, ...).
-4. Result: the program assembles `{"prompt", "name", "parameters"}` and
-   writes all results to the output file. Prompts that matched no function
-   are not written, so the output can contain fewer entries than the input.
+   values, one by one, according to each type.
+4. Result: the program assembles {"prompt", "name", "parameters"} and
+   writes all results to the output file. A prompt that fails during
+   generation is skipped with an error message, so the output can contain
+   fewer entries than the input.
 
 ### Design decisions
 
@@ -90,20 +83,17 @@ The generation of one call works in these steps:
 - Structure is forced, not generated: everything that is already known
   (keys, punctuation, the function name once only one option remains) is
   encoded directly and costs no model call.
-- Precomputed token lists: the number tokens and the end tokens (`,` and
-  `}`) are found once at startup, so number generation only scans a small
+- Precomputed token lists: the number tokens and the end tokens (, and
+  }) are found once at startup, so number generation only scans a small
   subset of the vocabulary.
 - Safety limits: strings are capped at 60 tokens and numbers at 20
   characters, so generation always terminates.
 - Pydantic validation: the function definitions and the prompts are
   validated with pydantic models that reject unknown keys, so a misspelled
-  key (`"typ"`, `"descripton"`) is reported. Empty or blank names,
-  descriptions and prompts are rejected, as are parameter types the decoder
-  does not handle (only `string`, `integer`, `number`, `boolean` and their
-  aliases), non-string enums, and function or parameter names that are not
-  valid identifiers. `Decoder` is itself a pydantic model.
-- No-match handling: the model can answer `fn_none` when the request is
-  unrelated to every function. The model makes this choice, not a heuristic.
+  key (typ, descripton) is reported. Empty or blank names,
+  descriptions and prompts are rejected, as are unsupported parameter types,
+  non-string enums, and function or parameter names that are not valid
+  identifiers. Decoder is itself a pydantic model.
 - Robust input handling: missing, unreadable or invalid files, invalid or
   duplicate function definitions and invalid prompts stop the program with a
   clear error message that gives the location of the problem. If one prompt
@@ -132,14 +122,13 @@ The generation of one call works in these steps:
   to accept a token that contains the closing quote only if the text before
   it is a valid complete string.
 - Escapes: a token can end in the middle of an escape sequence (a lone
-  `\`), which the string regex explicitly allows.
+  \), which the string regex explicitly allows.
 - Unwanted spaces: the model tends to add a leading space at the start of
   a string even though the prompt asks it not to.
-- Prompts with no matching function: the first attempt used a plain `none`
-  option, and the model chose it for every prompt, because the first token
-  of `none` differs from the `fn_` prefix shared by the real functions.
-  Naming the option `fn_none` and listing it with the other functions fixed
-  it.
+- Invented numbers: on a prompt like "add s and e", the model produced
+  4 and 5, and on "add -s and 99(($$e" it used 99 for both
+  parameters. Checking each generated number against the numbers of the
+  request, and using each only once, fixed both cases.
 
 ### Testing strategy
 
@@ -151,7 +140,9 @@ The generation of one call works in these steps:
   enum on a non-string parameter, and an output folder that does not exist.
 - Prompts with special characters (quotes, backslashes, accents) to test
   string escaping, and negative or decimal numbers to test number generation.
-- A prompt unrelated to every function, to check that it is skipped.
+- Prompts with missing or invalid numbers ("add s and e",
+  "add -s and 99(($$e") to check that no value is invented and that the
+  prompt is skipped.
 
 ### Example usage
 
@@ -162,10 +153,10 @@ uv run python -m src
 Console output while running:
 
 ```
-[1] the weather in 3 days?
-  no matching function, skipped
 [3] Greet shrek
  res = fn_greet {'name': 'shrek'}
+[4] add s and e
+  error: no value for 'a', skipped
 ```
 
 Output file:
